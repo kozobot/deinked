@@ -41,6 +41,10 @@ def main():
     ap.add_argument("image", nargs="?", default=None)
     ap.add_argument("--backend", default="lama", choices=["lama", "sdxl"])
     ap.add_argument("--prompt", default="a tattoo.")
+    ap.add_argument("--box-threshold", type=float, default=0.25, help="detector box confidence")
+    ap.add_argument("--text-threshold", type=float, default=0.2, help="detector text confidence")
+    ap.add_argument("--max-area-frac", type=float, default=0.25,
+                    help="drop detection boxes larger than this fraction of the image")
     ap.add_argument("--tile", action="store_true", help="tiled detection (higher recall, slower)")
     args = ap.parse_args()
 
@@ -51,7 +55,15 @@ def main():
 
     img = Image.open(src).convert("RGB")
     t0 = time.time()
-    res = remove_tattoo(img, backend=args.backend, prompt=args.prompt, tile=args.tile)
+    res = remove_tattoo(
+        img,
+        backend=args.backend,
+        prompt=args.prompt,
+        box_threshold=args.box_threshold,
+        text_threshold=args.text_threshold,
+        max_area_frac=args.max_area_frac,
+        tile=args.tile,
+    )
     dt = time.time() - t0
     print(f"found tattoo: {res.found}   elapsed: {dt:.1f}s")
 
