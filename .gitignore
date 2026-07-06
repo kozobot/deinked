@@ -139,6 +139,9 @@ data/silhouette/
 data/stock/
 data/models/
 
+# Pipeline scratch output (smoke tests, diagnostics)
+scratch/
+
 
 # IDE stuff
 .idea

@@ -1,0 +1,31 @@
+# Local conda environment for the deinked segment-and-inpaint tattoo remover.
+#
+# Create/update with:
+#   mamba env create -f environment.yml      # first time
+#   mamba env update -f environment.yml      # after edits
+#   conda activate deinked
+#
+# Target GPU: NVIDIA RTX 5070 Ti (Blackwell, sm_120, 16 GB), driver >= 570.
+# PyTorch is pulled from the CUDA 12.8 wheel index, which ships sm_120 kernels.
+name: deinked
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      # --- PyTorch (Blackwell / sm_120 build) ---
+      - --extra-index-url https://download.pytorch.org/whl/cu128
+      - torch
+      - torchvision
+      # --- Foundation models: detection + segmentation + inpainting ---
+      - transformers>=4.44        # GroundingDINO + SAM live here (no CUDA-ext build)
+      - diffusers>=0.30           # SDXL inpainting pipeline
+      - accelerate
+      - safetensors
+      - simple-lama-inpainting    # LaMa baseline inpainter (torchscript weights)
+      # --- Imaging / app ---
+      - opencv-python
+      - Pillow
+      - numpy
+      - marimo                    # reactive notebook / app UI
