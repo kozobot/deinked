@@ -132,3 +132,13 @@ dmypy.json
 data/rawdata/*.jpeg
 *.pkl
 models/
+
+# Large image datasets and model checkpoints — kept on disk, not versioned
+data/deinked/
+data/silhouette/
+data/stock/
+data/models/
+
+
+# IDE stuff
+.idea

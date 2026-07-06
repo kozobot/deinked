@@ -1,6 +1,7 @@
 # deinked
 
-Port of https://github.com/vijishmadhavan/SkinDeep from FastAI 1 to FastAI 2.   
+AI trained automatic tatto removal from images (and one day video).  This was initially a port of https://github.com/vijishmadhavan/SkinDeep from FastAI 1 to FastAI 2.  However, this has evolved into a training the model differently.
+
 
 # Running Deinked
 
@@ -28,6 +29,15 @@ docker run --rm \
 ## Collab
 
 Haven't set this up yet
+
+# Workflow
+
+1. Process the raw input data to prepare for taining(s)
+1. Generate some of the training data for the final tattoo removal training
+  1. Train a model to create masks
+  1. Process non-tatoo'd images to add tattoos and add to the main training set.
+1. Train a model to remove tattoos
+1. Run the model on arbitrary datasets
 
 # Setting everything up
 
