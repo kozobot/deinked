@@ -46,12 +46,14 @@ def main():
     ap.add_argument("--max-area-frac", type=float, default=0.25,
                     help="drop detection boxes larger than this fraction of the image")
     ap.add_argument("--tile", action="store_true", help="tiled detection (higher recall, slower)")
+    ap.add_argument("--detector", default="gdino", choices=["gdino", "owlv2", "ensemble"],
+                    help="open-vocab detector: gdino (default), owlv2, or ensemble (both, ~2x slower)")
     args = ap.parse_args()
 
     src = args.image or find_sample()
     if not src:
         raise SystemExit("No image given and no sample found under data/.")
-    print(f"input: {src}  backend: {args.backend}")
+    print(f"input: {src}  backend: {args.backend}  detector: {args.detector}")
 
     img = Image.open(src).convert("RGB")
     t0 = time.time()
@@ -59,6 +61,7 @@ def main():
         img,
         backend=args.backend,
         prompt=args.prompt,
+        detector=args.detector,
         box_threshold=args.box_threshold,
         text_threshold=args.text_threshold,
         max_area_frac=args.max_area_frac,

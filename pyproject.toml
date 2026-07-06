@@ -22,6 +22,7 @@ dependencies = [
 
 [project.optional-dependencies]
 app = ["marimo"]
+dev = ["pytest"]
 
 [tool.setuptools]
 packages = ["deink"]

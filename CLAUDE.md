@@ -30,12 +30,27 @@ The pipeline is `detect → segment → refine mask → inpaint → composite`, 
 `deink/` package:
 
 - **`deink/segment.py`** — `TattooSegmenter`. `detect_and_segment(image, prompt="a tattoo.")`
-  runs GroundingDINO (text-prompted detection) then SAM (segmentation), both via HF
+  runs an open-vocab detector (text-prompted) then SAM (segmentation), both via HF
   `transformers`. Detection boxes larger than `max_area_frac` (default 0.25) of the image are
-  dropped — GroundingDINO also returns a subject-sized "tattoo" box for the whole person,
+  dropped — the detector also returns a subject-sized "tattoo" box for the whole person,
   which would make SAM mask the entire body. `segment_from_points` / `segment_from_boxes`
   back the interactive path. Model ids: `IDEA-Research/grounding-dino-base`,
-  `facebook/sam-vit-huge`.
+  `google/owlv2-base-patch16-ensemble`, `facebook/sam-vit-huge`.
+  - **Pluggable detector (`detector=` knob):** `"gdino"` (GroundingDINO, default — no
+    regression), `"owlv2"` (OWLv2), or `"ensemble"` (union of both, concatenated then
+    NMS-deduped for max recall). Threaded through `remove_tattoo`, the app dropdown, and both
+    scripts as a per-call override, so the cached app singleton switches detectors without
+    rebuilding. `_detect_raw` is the seam: a dispatcher over `_detect_raw_gdino` /
+    `_detect_raw_owlv2`; everything downstream only consumes `(boxes Nx4 xyxy, scores N)`.
+  - **Why only OWLv2 (not YOLO-World / GroundingDINO 1.5+):** the pipeline stays
+    transformers-native (no CUDA-ext build, no extra pip deps) — that rules out YOLO-World
+    (`ultralytics`) and the gated GroundingDINO 1.5/1.6 API models. OWLv2 is registered under
+    the same `AutoModelForZeroShotObjectDetection` / `AutoProcessor` classes.
+  - **OWLv2 API differences from GroundingDINO:** takes a *list* of query phrases
+    (`text=[["a tattoo"]]`, no trailing period — the `.`-separated prompt is split via
+    `_owlv2_queries`), has a *single* confidence threshold (so `text_threshold` is ignored on
+    the OWLv2 path; `box_threshold` → OWLv2's `threshold`), and its
+    `post_process_grounded_object_detection` takes **no `input_ids`**.
 - **`deink/inpaint.py`** — `Inpainter`. Two backends: `"lama"` (simple-lama-inpainting,
   fast, strong skin-texture fill) and `"sdxl"` (`diffusers` `AutoPipelineForInpainting` with
   `diffusers/stable-diffusion-xl-1.0-inpainting-0.1`, runs at 1024px with model CPU offload,
