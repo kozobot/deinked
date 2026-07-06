@@ -1,14 +1,17 @@
-"""Sweep GroundingDINO detection settings on one image to pick per-image thresholds.
+"""Sweep open-vocab detection settings on one image to pick per-image thresholds.
 
 Detection only — no SAM, no inpaint — so it is fast enough to sweep a grid. For every
-combination of prompt x box-threshold x text-threshold x max-area-frac it prints the number
-of surviving boxes and their per-box area fractions (box area / image area), so you can see
-how recall responds and choose settings for a hard image. Lower thresholds recover fainter
-tattoos at the cost of false positives; ``max_area_frac`` caps how large a box may be (the
-guard against SAM masking the whole subject).
+combination of detector x prompt x box-threshold x text-threshold x max-area-frac it prints
+the number of surviving boxes and their per-box area fractions (box area / image area), so
+you can see how recall responds and choose settings for a hard image. Lower thresholds
+recover fainter tattoos at the cost of false positives; ``max_area_frac`` caps how large a
+box may be (the guard against SAM masking the whole subject). Sweeping ``--detectors gdino
+owlv2 ensemble`` A/Bs the detectors side by side (OWLv2 has no text threshold, so that column
+is ignored for it).
 
 Usage:
     python scripts/sweep_detect.py [IMAGE] \
+        --detectors gdino owlv2 ensemble \
         --prompts "a tattoo." "tattoo. ink drawing on skin." \
         --box-thresholds 0.15 0.25 --text-thresholds 0.15 0.2 \
         --max-area-fracs 0.25 0.5 [--tile] [--out DIR]
@@ -38,6 +41,9 @@ from smoke_test import find_sample
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("image", nargs="?", default=None)
+    ap.add_argument("--detectors", nargs="+", default=["gdino"],
+                    choices=["gdino", "owlv2", "ensemble"],
+                    help="open-vocab detector(s) to sweep (default: gdino)")
     ap.add_argument("--prompts", nargs="+", default=["a tattoo.", "tattoo. ink drawing on skin."])
     ap.add_argument("--box-thresholds", nargs="+", type=float, default=[0.15, 0.25])
     ap.add_argument("--text-thresholds", nargs="+", type=float, default=[0.15, 0.2])
@@ -60,20 +66,22 @@ def main():
         os.makedirs(args.out, exist_ok=True)
 
     combos = itertools.product(
-        args.prompts, args.box_thresholds, args.text_thresholds, args.max_area_fracs
+        args.detectors, args.prompts, args.box_thresholds, args.text_thresholds, args.max_area_fracs
     )
-    for i, (prompt, box_t, text_t, maf) in enumerate(combos):
+    for i, (det, prompt, box_t, text_t, maf) in enumerate(combos):
         if args.tile:
             boxes = seg.detect_boxes_tiled(
-                img, prompt, box_threshold=box_t, text_threshold=text_t, max_area_frac=maf
+                img, prompt, box_threshold=box_t, text_threshold=text_t,
+                max_area_frac=maf, detector=det,
             )
         else:
             boxes = seg.detect_boxes(
-                img, prompt, box_threshold=box_t, text_threshold=text_t, max_area_frac=maf
+                img, prompt, box_threshold=box_t, text_threshold=text_t,
+                max_area_frac=maf, detector=det,
             )
         fracs = [round(((b[2] - b[0]) * (b[3] - b[1])) / area, 3) for b in boxes]
         print(
-            f"[{i:2d}] prompt={prompt!r:45} box={box_t:<4} text={text_t:<4} "
+            f"[{i:2d}] det={det:<8} prompt={prompt!r:45} box={box_t:<4} text={text_t:<4} "
             f"maf={maf:<4} n={len(boxes):2d}  area_fracs={fracs}"
         )
 

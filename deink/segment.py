@@ -16,7 +16,33 @@ from PIL import Image
 from .utils import empty_mask, ensure_pil, get_device
 
 DEFAULT_DETECTOR = "IDEA-Research/grounding-dino-base"
+DEFAULT_OWLV2 = "google/owlv2-base-patch16-ensemble"
 DEFAULT_SEGMENTER = "facebook/sam-vit-huge"
+
+
+def _detector_family(detector_id: str) -> str:
+    """Classify a HF detector id into a detector family: ``"owlv2"`` or ``"gdino"``.
+
+    Lets a caller pass a custom ``detector_id`` and have the right code path inferred,
+    rather than requiring a separate family argument.
+    """
+    d = detector_id.lower()
+    if "owlv2" in d or "owlvit" in d:
+        return "owlv2"
+    return "gdino"  # default: grounding-dino-*
+
+
+def _owlv2_queries(prompt: str) -> list[str]:
+    """Turn a detection prompt into OWLv2's list of text queries.
+
+    GroundingDINO wants one lowercase ``.``-terminated string; OWLv2 wants a list of
+    separate query phrases with no trailing period. Split on ``.`` so the existing compound
+    prompt ``"tattoo. ink drawing on skin."`` becomes two queries, and ``"a tattoo."``
+    becomes ``["a tattoo"]``. Falls back to ``["a tattoo"]`` for an empty prompt.
+    """
+    queries = [q.strip().rstrip(".").strip() for q in prompt.split(".")]
+    queries = [q for q in queries if q]
+    return queries or ["a tattoo"]
 
 
 def _tile_boxes(W: int, H: int, tiles: int, overlap: float) -> list[tuple[int, int, int, int]]:
@@ -56,13 +82,14 @@ def _filter_by_area(boxes, img_area, max_area_frac, scores=None):
     return (boxes, scores) if scores is not None else boxes
 
 
-def _nms(boxes, scores, iou_thresh: float = 0.5) -> np.ndarray:
+def _nms(boxes, scores, iou_thresh: float = 0.5, return_idx: bool = False):
     """Greedy non-max suppression: keep highest-scoring boxes, drop those overlapping a
-    kept box by IoU > ``iou_thresh``. Returns (N, 4) xyxy."""
+    kept box by IoU > ``iou_thresh``. Returns (N, 4) xyxy, or ``(boxes, kept_idx)`` when
+    ``return_idx`` is set (so callers can slice a parallel ``scores`` array)."""
     boxes = np.asarray(boxes, dtype=float).reshape(-1, 4)
     scores = np.asarray(scores, dtype=float).reshape(-1)
     if len(boxes) == 0:
-        return boxes
+        return (boxes, np.empty((0,), dtype=int)) if return_idx else boxes
     areas = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
     order = scores.argsort()[::-1]  # high score first
     kept: list[int] = []
@@ -79,7 +106,8 @@ def _nms(boxes, scores, iou_thresh: float = 0.5) -> np.ndarray:
         inter = np.clip(xx1 - xx0, 0, None) * np.clip(yy1 - yy0, 0, None)
         iou = inter / (areas[i] + areas[rest] - inter + 1e-9)
         order = rest[iou <= iou_thresh]
-    return boxes[kept]
+    kept_idx = np.asarray(kept, dtype=int)
+    return (boxes[kept_idx], kept_idx) if return_idx else boxes[kept_idx]
 
 
 class TattooSegmenter:
@@ -90,31 +118,45 @@ class TattooSegmenter:
         detector_id: str = DEFAULT_DETECTOR,
         segmenter_id: str = DEFAULT_SEGMENTER,
         device=None,
+        detector: str | None = None,
+        owlv2_id: str = DEFAULT_OWLV2,
     ):
         self.detector_id = detector_id
+        self.owlv2_id = owlv2_id
         self.segmenter_id = segmenter_id
         self.device = device or get_device()
-        self._det_processor = None
-        self._det_model = None
+        # Default detector family for this instance. If ``detector`` is unset, infer it from
+        # ``detector_id`` (so a custom OWLv2 id still selects the OWLv2 path). Values:
+        # "gdino" (default), "owlv2", "ensemble" (union of both, deduped by NMS).
+        self.detector_family = detector or _detector_family(detector_id)
+        # Lazily loaded detectors, cached per family: {family: (processor, model)}.
+        self._detectors: dict[str, tuple] = {}
         self._sam_processor = None
         self._sam_model = None
 
     # --- lazy loaders -------------------------------------------------------
-    def _load_detector(self):
-        if self._det_model is None:
-            import torch
+    def _load_detector(self, family: str | None = None):
+        """Load (and cache) the detector for ``family`` ("gdino" or "owlv2").
+
+        Both families are registered under the same HF Auto classes. Models are cached per
+        family, so an instance that only ever runs "gdino" never loads OWLv2's weights.
+        """
+        family = family or self.detector_family
+        if family not in self._detectors:
             from transformers import (
                 AutoModelForZeroShotObjectDetection,
                 AutoProcessor,
             )
 
-            self._det_processor = AutoProcessor.from_pretrained(self.detector_id)
-            self._det_model = (
-                AutoModelForZeroShotObjectDetection.from_pretrained(self.detector_id)
+            model_id = self.owlv2_id if family == "owlv2" else self.detector_id
+            processor = AutoProcessor.from_pretrained(model_id)
+            model = (
+                AutoModelForZeroShotObjectDetection.from_pretrained(model_id)
                 .to(self.device)
                 .eval()
             )
-        return self._det_processor, self._det_model
+            self._detectors[family] = (processor, model)
+        return self._detectors[family]
 
     def _load_sam(self):
         if self._sam_model is None:
@@ -133,17 +175,35 @@ class TattooSegmenter:
         prompt: str = "a tattoo.",
         box_threshold: float = 0.25,
         text_threshold: float = 0.2,
+        *,
+        family: str | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Raw detector output: ``(boxes (N, 4) xyxy, scores (N,))``, no area filtering.
 
-        Kept private because the area filter (see ``detect_boxes``) is what makes the auto
-        path usable; tiled detection needs the unfiltered boxes + scores to offset, merge,
-        and filter against the *full* image area.
+        Dispatches on the detector ``family`` ("gdino", "owlv2", or "ensemble"), defaulting
+        to this instance's family. Kept private because the area filter (see ``detect_boxes``)
+        is what makes the auto path usable; tiled detection needs the unfiltered boxes +
+        scores to offset, merge, and filter against the *full* image area.
         """
+        family = family or self.detector_family
+        if family == "owlv2":
+            return self._detect_raw_owlv2(image, prompt, box_threshold)
+        if family == "ensemble":
+            return self._detect_raw_ensemble(image, prompt, box_threshold, text_threshold)
+        return self._detect_raw_gdino(image, prompt, box_threshold, text_threshold)
+
+    def _detect_raw_gdino(
+        self,
+        image,
+        prompt: str = "a tattoo.",
+        box_threshold: float = 0.25,
+        text_threshold: float = 0.2,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """GroundingDINO detection → ``(boxes (N, 4) xyxy, scores (N,))``, no area filter."""
         import torch
 
         image = ensure_pil(image)
-        processor, model = self._load_detector()
+        processor, model = self._load_detector("gdino")
         # GroundingDINO expects lowercase text ending in a period.
         text = prompt.lower().strip()
         if not text.endswith("."):
@@ -162,6 +222,59 @@ class TattooSegmenter:
         scores = results["scores"].detach().cpu().numpy().reshape(-1)
         return boxes, scores
 
+    def _detect_raw_owlv2(
+        self,
+        image,
+        prompt: str = "a tattoo.",
+        box_threshold: float = 0.25,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """OWLv2 detection → ``(boxes (N, 4) xyxy, scores (N,))``, no area filter.
+
+        Unlike GroundingDINO, OWLv2 takes a *list of query phrases* (no trailing period) and
+        has a single confidence threshold — there is no separate ``text_threshold``, so the
+        caller's ``box_threshold`` maps to OWLv2's ``threshold`` and ``text_threshold`` is
+        not used. Post-processing takes no ``input_ids``.
+        """
+        import torch
+
+        image = ensure_pil(image)
+        processor, model = self._load_detector("owlv2")
+        queries = _owlv2_queries(prompt)
+        inputs = processor(text=[queries], images=image, return_tensors="pt").to(self.device)
+        with torch.no_grad():
+            outputs = model(**inputs)
+        target_sizes = torch.tensor([image.size[::-1]], device=self.device)  # (H, W)
+        results = processor.post_process_grounded_object_detection(
+            outputs,
+            threshold=box_threshold,
+            target_sizes=target_sizes,
+        )[0]
+        boxes = results["boxes"].detach().cpu().numpy().reshape(-1, 4)
+        scores = results["scores"].detach().cpu().numpy().reshape(-1)
+        return boxes, scores
+
+    def _detect_raw_ensemble(
+        self,
+        image,
+        prompt: str = "a tattoo.",
+        box_threshold: float = 0.25,
+        text_threshold: float = 0.2,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Union of GroundingDINO + OWLv2 boxes, deduped via NMS → ``(boxes, scores)``.
+
+        Both detectors independently propose boxes; concatenating and NMS-merging drops the
+        overlaps. Because both the tiled and non-tiled paths funnel through ``_detect_raw``,
+        ensembling lifts recall on either path. Roughly doubles detection time.
+        """
+        b1, s1 = self._detect_raw_gdino(image, prompt, box_threshold, text_threshold)
+        b2, s2 = self._detect_raw_owlv2(image, prompt, box_threshold)
+        boxes = np.concatenate([b1, b2], axis=0).reshape(-1, 4)
+        scores = np.concatenate([s1, s2], axis=0).reshape(-1)
+        if len(boxes) == 0:
+            return boxes, scores
+        boxes, kept = _nms(boxes, scores, return_idx=True)
+        return boxes, scores[kept]
+
     def detect_boxes(
         self,
         image,
@@ -169,15 +282,19 @@ class TattooSegmenter:
         box_threshold: float = 0.25,
         text_threshold: float = 0.2,
         max_area_frac: float = 0.25,
+        detector: str | None = None,
     ) -> np.ndarray:
         """Return an (N, 4) array of xyxy boxes for the prompt (empty if none).
 
         Boxes larger than ``max_area_frac`` of the image are dropped: GroundingDINO tends
         to also return one subject-sized box for "tattoo" (the whole tattooed person),
         which would make SAM segment the entire body instead of the individual tattoos.
+
+        ``detector`` overrides the instance's detector family for this call.
         """
         image = ensure_pil(image)
-        boxes, _ = self._detect_raw(image, prompt, box_threshold, text_threshold)
+        family = detector or self.detector_family
+        boxes, _ = self._detect_raw(image, prompt, box_threshold, text_threshold, family=family)
         img_area = float(image.size[0] * image.size[1])
         return _filter_by_area(boxes, img_area, max_area_frac)
 
@@ -191,6 +308,7 @@ class TattooSegmenter:
         tile_max_area_frac: float = 0.03,
         tiles: int = 2,
         overlap: float = 0.2,
+        detector: str | None = None,
     ) -> np.ndarray:
         """Detect on overlapping crops (+ the full image) and merge into (N, 4) xyxy boxes.
 
@@ -212,6 +330,7 @@ class TattooSegmenter:
           from ever reaching SAM.
         """
         image = ensure_pil(image)
+        family = detector or self.detector_family
         W, H = image.size
         img_area = float(W * H)
 
@@ -221,7 +340,9 @@ class TattooSegmenter:
         crops = [(0, 0, W, H), *_tile_boxes(W, H, tiles, overlap)]
         for idx, (x0, y0, x1, y1) in enumerate(crops):
             crop = image.crop((x0, y0, x1, y1))
-            boxes, scores = self._detect_raw(crop, prompt, box_threshold, text_threshold)
+            boxes, scores = self._detect_raw(
+                crop, prompt, box_threshold, text_threshold, family=family
+            )
             if not len(boxes):
                 continue
             boxes = boxes + np.array([x0, y0, x0, y0], dtype=float)  # to full-image coords
@@ -305,6 +426,7 @@ class TattooSegmenter:
         tile_max_area_frac: float = 0.03,
         tiles: int = 2,
         overlap: float = 0.2,
+        detector: str | None = None,
     ) -> np.ndarray:
         """Full auto path: detect the prompt, then segment. Empty mask if nothing found.
 
@@ -312,6 +434,9 @@ class TattooSegmenter:
         tattoos, slower) via ``detect_boxes_tiled``. ``tile_max_area_frac`` caps how large
         a tile-derived box may be (fraction of the full image) — the guard against SAM
         segmenting a whole limb from a loose crop box.
+
+        ``detector`` ("gdino", "owlv2", or "ensemble") overrides the instance's detector
+        family for this call, so a cached segmenter can switch detectors without rebuilding.
         """
         image = ensure_pil(image)
         if tile:
@@ -324,6 +449,7 @@ class TattooSegmenter:
                 tile_max_area_frac=tile_max_area_frac,
                 tiles=tiles,
                 overlap=overlap,
+                detector=detector,
             )
         else:
             boxes = self.detect_boxes(
@@ -332,6 +458,7 @@ class TattooSegmenter:
                 box_threshold=box_threshold,
                 text_threshold=text_threshold,
                 max_area_frac=max_area_frac,
+                detector=detector,
             )
         if len(boxes) == 0:
             return empty_mask(image.size)

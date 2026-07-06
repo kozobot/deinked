@@ -63,6 +63,7 @@ def remove_tattoo(
     tile_max_area_frac: float = 0.03,
     tiles: int = 2,
     overlap: float = 0.2,
+    detector: str | None = None,
     **inpaint_kwargs,
 ) -> RemovalResult:
     """Remove tattoos from ``image``.
@@ -77,6 +78,11 @@ def remove_tattoo(
     ``max_area_frac`` caps how large a detection box may be relative to the image (the
     guard against SAM masking the whole subject). See ``scripts/sweep_detect.py`` to sweep
     combinations for a given image.
+
+    ``detector`` picks the open-vocab detector: ``"gdino"`` (GroundingDINO, default),
+    ``"owlv2"`` (OWLv2 — catches small/faint tattoos GroundingDINO misses; note it has no
+    ``text_threshold``), or ``"ensemble"`` (union of both, NMS-merged, max recall, ~2x
+    detection time). ``None`` uses the segmenter's own default.
     """
     image = ensure_pil(image)
 
@@ -93,6 +99,7 @@ def remove_tattoo(
             tile_max_area_frac=tile_max_area_frac,
             tiles=tiles,
             overlap=overlap,
+            detector=detector,
         )
     else:
         raw = np.asarray(mask.convert("L")) if isinstance(mask, Image.Image) else np.asarray(mask)

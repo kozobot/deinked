@@ -70,6 +70,7 @@ def _(mo):
         kind="button", label="Optional mask (white = remove)", filetypes=[".png", ".jpg", ".jpeg"]
     )
     backend = mo.ui.dropdown(["lama", "sdxl"], value="lama", label="Inpaint backend")
+    detector = mo.ui.dropdown(["gdino", "owlv2", "ensemble"], value="gdino", label="Detector")
     prompt = mo.ui.text(value="a tattoo.", label="Detection prompt")
     tile = mo.ui.checkbox(value=False, label="Tile detect (slower, better recall)")
     dilate = mo.ui.slider(0, 40, value=8, label="Mask grow (px)")
@@ -82,7 +83,7 @@ def _(mo):
     controls = mo.vstack(
         [
             mo.hstack([upload, mask_upload], justify="start"),
-            mo.hstack([backend, prompt, tile], justify="start"),
+            mo.hstack([backend, detector, prompt, tile], justify="start"),
             mo.hstack([dilate, feather], justify="start"),
             mo.accordion(
                 {
@@ -97,6 +98,7 @@ def _(mo):
     return (
         backend,
         box_threshold,
+        detector,
         dilate,
         feather,
         mask_upload,
@@ -114,6 +116,7 @@ def _(
     Image,
     backend,
     box_threshold,
+    detector,
     dilate,
     feather,
     get_inpainter,
@@ -147,6 +150,7 @@ def _(
         backend=backend.value,
         prompt=prompt.value,
         mask=user_mask,
+        detector=detector.value,
         tile=tile.value,
         dilate=dilate.value,
         feather=feather.value,
