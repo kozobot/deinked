@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deinked"
+version = "0.2.0"
+description = "Segment-and-inpaint tattoo removal from images"
+requires-python = ">=3.11"
+# Runtime deps are installed via environment.yml (conda). Listed here for reference.
+dependencies = [
+    "torch",
+    "torchvision",
+    "transformers>=5",
+    "diffusers>=0.30",
+    "accelerate",
+    "simple-lama-inpainting",
+    "opencv-python",
+    "Pillow",
+    "numpy",
+]
+
+[project.optional-dependencies]
+app = ["marimo"]
+
+[tool.setuptools]
+packages = ["deink"]

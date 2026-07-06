@@ -1,56 +1,92 @@
 # deinked
 
-AI trained automatic tatto removal from images (and one day video).  This was initially a port of https://github.com/vijishmadhavan/SkinDeep from FastAI 1 to FastAI 2.  However, this has evolved into a training the model differently.
+Automatic tattoo removal from images (video is a future goal).
 
+**This project pivoted.** It began as a fastai v2 port of
+[SkinDeep](https://github.com/vijishmadhavan/SkinDeep) that *trained* a GAN to remove
+tattoos. That approach never fully worked — the adversarial stage never converged and the
+MSE-only generator only faded tattoos rather than reconstructing skin. Modern foundation
+models make training a bespoke model unnecessary, so deinked is now a **segment-and-inpaint
+pipeline** built on pretrained models:
 
-# Running Deinked
-
-## Locally
-
-To run the Jupyter Notebooks I use a an extended version of the FastAI docker containers.
-https://github.com/fastai/docker-containers.  The changes I've made are:
-* Changed the root from fastai to local 
-* Changed the base ubuntu image to an NVIDIA/CUDA one (nvidia/cuda:11.3.1-base-ubuntu20.04) for GPU training
-* Added an image (-ext) with my dependencies and endpoint
-  * Locally install ffmpeg libsm6 libxext6
-  * Pip install nvidia-ml-py3 opencv-python Pillow
-
-This is the command that I use to run the customized container.
-```commandline
-docker run --rm \
-    --gpus all --privileged \
-    --name fastai --ipc=host \
-    -p 8888:8888 \
-    -v `pwd`:/home \
-    local/fastai-ext \
-    jupyter notebook
+```
+image → detect the tattoo (GroundingDINO) → segment it (SAM) → grow/feather the mask
+      → inpaint (LaMa or SDXL) → composite back at full resolution
 ```
 
-## Collab
+The old training notebooks are archived under [`legacy/`](legacy/README.md).
 
-Haven't set this up yet
+## Setup
 
-# Workflow
+Everything runs locally on the GPU via a conda environment. Target hardware is an NVIDIA
+Blackwell card (e.g. RTX 5070 Ti, 16 GB); any recent CUDA GPU with a driver new enough for
+your PyTorch build works.
 
-1. Process the raw input data to prepare for taining(s)
-1. Generate some of the training data for the final tattoo removal training
-  1. Train a model to create masks
-  1. Process non-tatoo'd images to add tattoos and add to the main training set.
-1. Train a model to remove tattoos
-1. Run the model on arbitrary datasets
+```bash
+mamba env create -f environment.yml     # or: conda env create -f environment.yml
+conda activate deinked
+```
 
-# Setting everything up
+PyTorch is pulled from a CUDA wheel that ships `sm_120` (Blackwell) kernels. Verify the GPU:
 
-## Prepare the training data
+```bash
+python -c "import torch; print(torch.cuda.get_device_name(0), torch.cuda.get_device_capability(0))"
+```
 
-Place your training set in data/rawdata.  The tattoo image and clean image should be named <name>_tattoo.jpeg and <name>_clean.jpeg respectively.
+## Usage
 
-Run the Deink - Process Raw Data notebook.  This will prep the images for training and put them in data/tattoo and data/clean respectively.
+### App (marimo)
 
-## Running training
+```bash
+marimo run app.py        # interactive: upload → remove → before/after
+marimo edit app.py       # open as an editable reactive notebook
+```
 
-The Deink - Train Model notebook, unsurprisingly, is for training the model.  There is a cell for setting training variables.
+Upload a photo; the tool auto-detects and removes tattoos. If auto-detect misses, upload a
+black/white mask (white = the area to remove). Toggle the inpaint backend (LaMa vs SDXL) and
+tune mask grow/feather.
 
-## Predicting images
+### Library / script
 
-Use the Deink - Predict Image notebook to load the model and process an image of your choosing.
+```python
+from PIL import Image
+from deink import remove_tattoo
+
+img = Image.open("photo.jpg")
+result = remove_tattoo(img, backend="lama")   # or backend="sdxl"
+result.image.save("clean.jpg")
+```
+
+Quick end-to-end check on a sample image:
+
+```bash
+python scripts/smoke_test.py --backend lama
+# writes scratch/smoke_lama.png (before | after) and scratch/smoke_lama_mask.png
+```
+
+## How it works
+
+- **`deink/segment.py`** — `TattooSegmenter`: text-prompted detection (GroundingDINO) +
+  SAM segmentation, via Hugging Face `transformers` (no CUDA-extension build). Subject-sized
+  detection boxes are dropped so SAM masks the individual tattoos, not the whole person.
+  `segment_from_points` backs the interactive fallback.
+- **`deink/inpaint.py`** — `Inpainter`: **LaMa** (fast, excellent skin-texture fill) and
+  **SDXL inpainting** (semantic fill for harder regions). Models load lazily; SDXL uses
+  model CPU offload to fit in 16 GB.
+- **`deink/pipeline.py`** — `remove_tattoo`: orchestrates detect → segment → refine mask
+  (dilate + feather) → inpaint → feathered composite at full resolution. Pixels outside the
+  mask stay bit-identical to the input.
+
+## Backends
+
+| Backend | Speed | Best for |
+|---------|-------|----------|
+| `lama`  | fast (~seconds) | most tattoos on skin; strong default |
+| `sdxl`  | slower (diffusion) | large/complex regions needing semantic fill |
+
+## Roadmap
+
+- **Recall:** GroundingDINO's "tattoo" prompt misses faint marks. A custom tattoo
+  segmentation model, fine-tuned from the `legacy/` silhouette masks, would improve auto-detect.
+- **Video:** swap SAM for SAM 2 (native mask propagation across frames) and add temporal
+  consistency to the inpaint step.

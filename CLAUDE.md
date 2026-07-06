@@ -4,49 +4,74 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`deinked` trains a deep-learning model that automatically removes tattoos from images (with video as a future goal). It began as a port of [SkinDeep](https://github.com/vijishmadhavan/SkinDeep) from FastAI 1 to FastAI 2 and has since diverged into a different training approach. Everything is **fastai v2 / PyTorch** driven from **Jupyter notebooks** — there is no standalone Python package or test suite.
+`deinked` removes tattoos from images (video is a future goal). It **used to** train a
+bespoke fastai GAN (a NoGAN port of [SkinDeep](https://github.com/vijishmadhavan/SkinDeep));
+that never fully worked and has been retired. It is now a **segment-and-inpaint pipeline**
+built on pretrained foundation models — no training. The code is a small importable Python
+package (`deink/`) plus a marimo app, driven from a local conda environment.
 
 ## Running
 
-Notebooks run inside an extended fastai Docker container (fastai base + `nvidia/cuda:11.3.1-base-ubuntu20.04` for GPU, plus `ffmpeg libsm6 libxext6`, and pip `nvidia-ml-py3 opencv-python Pillow`). Typical launch:
+Local conda env (no Docker), targeting an NVIDIA Blackwell GPU (sm_120, e.g. RTX 5070 Ti):
 
+```bash
+mamba env create -f environment.yml && conda activate deinked
 ```
-docker run --rm --gpus all --privileged --name fastai --ipc=host \
-    -p 8888:8888 -v `pwd`:/home local/fastai-ext jupyter notebook
-```
 
-GPU is assumed; `Deink_00_Utils.get_torch_device()` reports VRAM via `pynvml` and falls back to CPU only if CUDA is unavailable.
+PyTorch comes from a CUDA wheel that includes `sm_120` kernels. There is no CPU-only path
+worth using — the diffusion/segmentation models assume a GPU.
 
-## Pipeline architecture
+- App: `marimo run app.py` (or `marimo edit app.py`).
+- Smoke test: `python scripts/smoke_test.py --backend lama` → writes `scratch/smoke_*.png`.
 
-The numbered `Deink_NN_*.ipynb` notebooks are an **ordered pipeline** — run them in sequence. There are two model-training tracks feeding a final tattoo-removal model:
+## Architecture
 
-**Silhouette track** (produces synthetic training data by learning tattoo masks):
-- `01_Silhouette_Process_Raw_Data` — prep raw silhouette data into `source`/`mask`/`tattooless` sets.
-- `02_Silhouette_Train_Model` — U-Net that predicts a tattoo mask from an image → `silhouette-<arch>-epocs<N>.pkl`.
-- `03_Silhouette_Predict_Masks` — run the silhouette model to generate masks into `data/silhouette/mask-predict`.
-- `04_Silhouette_Generate_Deink_Data` — composite tattoo clipart onto tattoo-free images using masks to synthesize `(tattooed, clean)` training pairs into `data/deinked/{tattoo,clean}`.
+The pipeline is `detect → segment → refine mask → inpaint → composite`, implemented in the
+`deink/` package:
 
-**Deink (tattoo-removal) track:**
-- `05_Process_Raw_Data` — resize/normalize real `*_clean` / `*_tattoo` raw pairs into `data/deinked/{clean,tattoo}`.
-- `06_Train_Model` — U-Net generator that removes tattoos → `deinked-<arch>-epocs<N>.pkl`.
-- `07_Save_Predictions` — run the generator over inputs, saving outputs into `data/deinked/gen` (these become "fake" examples for the critic).
-- `08_Train_Critic` — binary classifier distinguishing generated (`gen`) from real (`tattoo`) images → `deinked-gen-critic-epocs<N>.pkl`.
-- `09_Train_GAN` — loads a pretrained generator + critic and combines them via `GANLearner.from_learners` for adversarial fine-tuning.
+- **`deink/segment.py`** — `TattooSegmenter`. `detect_and_segment(image, prompt="a tattoo.")`
+  runs GroundingDINO (text-prompted detection) then SAM (segmentation), both via HF
+  `transformers`. Detection boxes larger than `max_area_frac` (default 0.25) of the image are
+  dropped — GroundingDINO also returns a subject-sized "tattoo" box for the whole person,
+  which would make SAM mask the entire body. `segment_from_points` / `segment_from_boxes`
+  back the interactive path. Model ids: `IDEA-Research/grounding-dino-base`,
+  `facebook/sam-vit-huge`.
+- **`deink/inpaint.py`** — `Inpainter`. Two backends: `"lama"` (simple-lama-inpainting,
+  fast, strong skin-texture fill) and `"sdxl"` (`diffusers` `AutoPipelineForInpainting` with
+  `diffusers/stable-diffusion-xl-1.0-inpainting-0.1`, runs at 1024px with model CPU offload,
+  composited back at native size). Models load lazily and stay resident.
+- **`deink/pipeline.py`** — `remove_tattoo(image, backend=..., mask=None, dilate=15,
+  feather=5, ...) -> RemovalResult`. Pass a `mask` to skip detection (interactive path).
+  `refine_mask` dilates (cover ink edges) and feathers (seamless blend). Returns `.image`,
+  `.mask`, `.raw_mask`, `.found`. Pixels outside the mask are left bit-identical to the input.
+- **`deink/utils.py`** — `get_device`, `ensure_pil`, `mask_to_pil`, `empty_mask`.
 
-`Deink_00_Utils.ipynb` is the **shared module** imported by every other notebook via `from ipynb.fs.full.Deink_00_Utils import *`. Edit it to change anything global: `image_size` (default `(480, 360)`), `batch_size`, all `data/` path constants, the `resize` transform, and the DataLoader factories (`get_sil_dls`, `get_dls`, `get_crit_dls`). Note the `get_y` helpers (`_get_sil_y`, `_get_y`) must be importable by name — they are referenced when a `.pkl` learner is reloaded, so keep their signatures stable.
+Heavy model objects live on `TattooSegmenter` / `Inpainter` instances — construct once and
+pass into `remove_tattoo` to reuse across calls (the marimo app caches singletons with
+`functools.lru_cache`).
 
 ## Conventions that matter
 
-- **Naming drives everything.** Raw input pairs must be named `<name>_tattoo.<ext>` / `<name>_clean.<ext>` (deink track) or `<name>_source/_mask/_tattooless` (silhouette track); the process notebooks regex-match these suffixes and drop the suffix when saving. Files that match no convention are skipped with a warning.
-- **Model/history filenames encode config**: `<track>-<arch>-epocs<N>.pkl` and matching `..._history.csv`. `<arch>` is the fastai backbone chosen in the training notebook's `bbone = ...` cell (`resnet18/34/50` or the local `xresnet34_deeper`); `<N>` is the epoch count.
-- **Resumable training**: each training notebook periodically saves checkpoints to `models/*callback_saved_*_<epoch>.pth` and supports resuming from `start_epoch`. The `models/` directory and all `*.pkl` files are git-ignored (see `.gitignore`).
-- **Directory roles** (from `Deink_00_Utils`): in fastai's low-res→high-res framing, the *source/tattoo* dir is the input (LR) and the *mask/clean* dir is the target (HR).
+- **`deink` must be importable.** `app.py` (repo root) imports it directly; `scripts/*.py`
+  prepend the repo root to `sys.path`. For editable installs, `pip install -e .` (see
+  `pyproject.toml`).
+- **Masks are white = remove.** `refine_mask` returns float [0,1]; LaMa gets a hard binary
+  mask, SDXL gets the soft one, and the final composite uses the feathered mask.
+- **GPU expectations.** transformers/diffusers models auto-place on CUDA via `get_device()`.
+  SDXL uses `enable_model_cpu_offload()` to stay under 16 GB — do not `.to("cuda")` the whole
+  pipe as well.
 
 ## Data layout
 
-`data/deinked/{rawdata,tattoo,clean,gen,test}`, `data/silhouette/{rawdata,source,mask,mask-predict,tattooless,tattoo_clipart,test}`, `data/stock/{laser-removal,retouchme-source,retouchme-output,synthetic}`. Raw and generated image data is not committed.
+Image data stays on disk, git-ignored: `data/deinked/{rawdata,tattoo,clean,gen,test}`,
+`data/silhouette/*`, `data/stock/*`, `data/models/`. `data/deinked/test/` and
+`data/stock/laser-removal/` are handy test inputs. Small history CSVs and sample outputs from
+the old training era are committed as a record.
 
-## Non-pipeline files
+## Legacy
 
-`Deink - Predict Image.ipynb` loads an exported `.pkl` and runs it on an arbitrary image. `Deink_ALL.ipynb`, `lesson2-sgd-in-action.ipynb`, and `Untitled.ipynb` are scratch/legacy and not part of the pipeline.
+`legacy/` holds the retired fastai NoGAN notebooks (`Deink_00`–`Deink_05`) — kept because the
+**silhouette mask-generation track and its curated data** are the one reusable asset (a future
+custom tattoo-segmentation model could be fine-tuned from them). The dead generator/critic/GAN
+notebooks (`Deink_06`–`Deink_09`) and scratch files were removed; they remain in git history
+at commit `b313960`. See `legacy/README.md`.
