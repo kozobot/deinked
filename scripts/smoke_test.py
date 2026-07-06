@@ -41,6 +41,7 @@ def main():
     ap.add_argument("image", nargs="?", default=None)
     ap.add_argument("--backend", default="lama", choices=["lama", "sdxl"])
     ap.add_argument("--prompt", default="a tattoo.")
+    ap.add_argument("--tile", action="store_true", help="tiled detection (higher recall, slower)")
     args = ap.parse_args()
 
     src = args.image or find_sample()
@@ -50,7 +51,7 @@ def main():
 
     img = Image.open(src).convert("RGB")
     t0 = time.time()
-    res = remove_tattoo(img, backend=args.backend, prompt=args.prompt)
+    res = remove_tattoo(img, backend=args.backend, prompt=args.prompt, tile=args.tile)
     dt = time.time() - t0
     print(f"found tattoo: {res.found}   elapsed: {dt:.1f}s")
 
