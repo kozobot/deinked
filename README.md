@@ -93,19 +93,48 @@ these are the next improvements.
 
 GroundingDINO's `"a tattoo."` prompt reliably finds bold pieces but misses faint/small marks
 (thin script, tiny wrist/ankle tattoos, low-contrast grey work). Because the pipeline can only
-remove what it masks, recall is currently the ceiling on quality. Options, cheapest first:
+remove what it masks, recall is currently the ceiling on quality.
+
+Evaluated against the paired `data/deinked/rawdata/retouchme-*_{tattoo,clean}` set (artist-
+cleaned targets → derive a ground-truth mask from the tattoo/clean pixel diff), the auto path
+works well on **discrete** tattoos but hits two ceilings on **heavy coverage**: (a) on a
+near-fully-tattooed subject GroundingDINO's top box is the whole person (correctly dropped by
+`max_area_frac`), so recall collapses; (b) a box detector + SAM can't cleanly separate ink from
+skin when the tattoo *is* most of the visible skin. Both point at a pixel-level tattoo
+segmenter. Options, cheapest first:
 
 - **Prompt / threshold tuning.** Expose and sweep `box_threshold` / `text_threshold` /
   `max_area_frac` per image; try compound prompts (`"tattoo. ink drawing on skin."`). Cheap,
   partial gains. Already parameterized in `deink/pipeline.remove_tattoo`.
-- **Tile-and-detect.** Run detection on overlapping crops and merge boxes, so small tattoos
-  occupy more of the detector's field of view. Moderate effort, good recall gain, slower.
-- **Custom tattoo segmentation model (highest value).** Fine-tune a segmenter specifically for
-  tattoos and drop GroundingDINO from the auto path entirely. The `legacy/` silhouette track is
-  exactly the reusable asset for this — it already learned tattoo masks and has curated
+- **Tile-and-detect.** ✅ *Implemented.* Detection runs on overlapping crops (plus the full
+  image); boxes are offset back to full-image coordinates and NMS-merged. Because tiling only
+  needs to recover tattoos too small to catch at full scale, tile-derived boxes are capped hard
+  (`tile_max_area_frac`, default 0.03 of the image): on a zoomed crop GroundingDINO returns a
+  loose box that sprawls onto the limb, and SAM would then segment the whole limb — the strict
+  cap keeps only genuinely small tattoos and drops those limb-sized boxes. The full-image pass
+  keeps the normal `max_area_frac` cap. Enable with `remove_tattoo(..., tile=True)` (also
+  `--tile` on `scripts/smoke_test.py` and the "Tile detect" checkbox in the app); tune
+  `tile_max_area_frac` / `tiles` / `overlap`. See `TattooSegmenter.detect_boxes_tiled` in
+  `deink/segment.py`.
+- **Swap / upgrade the open-vocab detector.** GroundingDINO-base is the weakest link. Low-effort
+  drop-in alternatives (all via HF `transformers`, all fit 16 GB) to A/B against it:
+  - **GroundingDINO 1.5 / 1.6** (IDEA) — same API family, stronger detection.
+  - **OWLv2** (Google) — open-vocab detector that tends to catch small objects GroundingDINO misses.
+  - **YOLO-World** — open-vocab, fast, and *fine-tunable* (bridges to the custom-model bullet).
+  - **Florence-2** (Microsoft, ~0.8B) — unified vision model; its dense-region / referring-
+    segmentation modes can propose tattoo regions better than a single `"a tattoo."` prompt.
+  Note: raising `box_threshold` to cut false positives was measured to cost far more recall than
+  it saves (faint tattoos and false positives share the same low-score band) — prefer a better
+  detector over threshold tuning.
+- **Custom tattoo segmentation model (highest value).** Fine-tune a *pixel-level* segmenter
+  specifically for tattoos and drop GroundingDINO + the box→SAM path from the auto flow entirely.
+  This is the only thing that fixes the heavy-coverage ceiling above: it masks exactly the inked
+  skin even at high body coverage, instead of collapsing to a whole-person box. The `legacy/`
+  silhouette track is exactly the reusable asset — it already learned tattoo masks and has curated
   `source`/`mask` pairs plus a synthetic-data generator (clipart composited onto skin). Retarget
-  that data to fine-tune e.g. a SAM decoder, a U-Net, or a YOLO-seg head. This is the single
-  change most likely to make auto-removal "just work." See `legacy/README.md`.
+  that data to fine-tune e.g. a SAM/SAM 2 decoder, a Mask2Former/SegFormer/U-Net semantic head, or
+  a YOLO-seg head. The single change most likely to make auto-removal "just work." See
+  `legacy/README.md`.
 - **Human-in-the-loop mask editing.** Even with a great detector, a shippable tool wants a
   brush/eraser to correct masks. Today the app supports uploading a full mask; an in-app
   SAM-click ("click a tattoo, SAM grows the region") via `segment_from_points` is the natural
@@ -113,17 +142,28 @@ remove what it masks, recall is currently the ceiling on quality. Options, cheap
 
 ### 2. Inpainting quality
 
-- **Validate and tune SDXL.** Only the LaMa backend has been exercised end-to-end; smoke-test
-  `--backend sdxl`, then tune `strength`, `guidance_scale`, steps, and the skin prompt in
-  `deink/inpaint.py`. LaMa wins on speed and plain skin; SDXL should win on large/curved regions
-  and areas crossing anatomical boundaries.
-- **Better skin models.** Evaluate FLUX Fill (needs a quantized/GGUF build to fit 16 GB) and
-  dedicated skin-retouch or object-removal models. Consider a two-pass approach: LaMa for
-  structure, a light diffusion pass for texture realism.
-- **Backend auto-selection.** Pick LaMa vs SDXL per region based on mask size / location
-  (e.g. large or joint-crossing masks → SDXL) instead of a global toggle.
-- **Mask refinement.** Per-region adaptive dilation, edge-aware feathering, and color-matching
-  the fill to surrounding skin tone to kill seams and lighting mismatches.
+- **Backend auto-selection (highest value, cheap).** Route per mask instead of a global toggle:
+  small masks → LaMa (fast, plain skin), large or limb-spanning masks → SDXL. Confirmed
+  necessary on `retouchme-86` (full-sleeve tattoos): **LaMa dissolves the whole forearm into the
+  background** on a limb-sized hole because it has no semantics, whereas **SDXL reconstructs a
+  coherent arm/garment** (~11 s). Detection there was already correct (98% recall) — this is
+  purely a fill-quality problem, so size-based routing fixes it without new dependencies.
+- **Tune SDXL.** Now validated end-to-end; tune `strength`, `guidance_scale`, steps, and the skin
+  prompt in `deink/inpaint.py`. LaMa wins on speed and plain skin; SDXL wins on large/curved
+  regions and areas crossing anatomical boundaries.
+- **Better fill models.** In rough order of quality/effort:
+  - **FLUX.1 Fill [dev]** (Black Forest Labs) — current SOTA inpainting, better structure/texture
+    than SDXL; needs a quantized (GGUF / nf4) build to fit 16 GB.
+  - **PowerPaint** / **BrushNet** — diffusion inpainters with an explicit *object-removal* mode,
+    designed for "remove this, fill plausibly."
+  - **MAT** / **MI-GAN** / **ZITS** — large-hole specialists, better than LaMa on big masks if you
+    want to stay feed-forward/fast.
+  - **ControlNet (pose/depth) guidance** or a **two-pass** LaMa-structure → diffusion-texture combo
+    to keep reconstructed limbs anatomically correct.
+- **Mask refinement.** The default dilation was reduced 15 → 8 px (measured on the paired retouchme
+  data: ~38% less clean-skin over-paint — the main "blur" source — at negligible recall cost).
+  Remaining: per-region adaptive dilation, edge-aware feathering, and color-matching the fill to
+  surrounding skin tone to kill seams and lighting mismatches.
 
 ### 3. Video (stated long-term goal)
 

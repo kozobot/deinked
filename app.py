@@ -71,20 +71,21 @@ def _(mo):
     )
     backend = mo.ui.dropdown(["lama", "sdxl"], value="lama", label="Inpaint backend")
     prompt = mo.ui.text(value="a tattoo.", label="Detection prompt")
-    dilate = mo.ui.slider(0, 40, value=15, label="Mask grow (px)")
+    tile = mo.ui.checkbox(value=False, label="Tile detect (slower, better recall)")
+    dilate = mo.ui.slider(0, 40, value=8, label="Mask grow (px)")
     feather = mo.ui.slider(0, 25, value=5, label="Feather (px)")
     run = mo.ui.run_button(label="Remove tattoo")
 
     controls = mo.vstack(
         [
             mo.hstack([upload, mask_upload], justify="start"),
-            mo.hstack([backend, prompt], justify="start"),
+            mo.hstack([backend, prompt, tile], justify="start"),
             mo.hstack([dilate, feather], justify="start"),
             run,
         ]
     )
     controls
-    return backend, dilate, feather, mask_upload, prompt, run, upload
+    return backend, dilate, feather, mask_upload, prompt, run, tile, upload
 
 
 @app.cell
@@ -100,6 +101,7 @@ def _(
     mo,
     prompt,
     run,
+    tile,
     time,
     to_png,
     remove_tattoo,
@@ -121,6 +123,7 @@ def _(
         backend=backend.value,
         prompt=prompt.value,
         mask=user_mask,
+        tile=tile.value,
         dilate=dilate.value,
         feather=feather.value,
         segmenter=get_segmenter(),

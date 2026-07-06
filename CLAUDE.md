@@ -40,7 +40,7 @@ The pipeline is `detect → segment → refine mask → inpaint → composite`, 
   fast, strong skin-texture fill) and `"sdxl"` (`diffusers` `AutoPipelineForInpainting` with
   `diffusers/stable-diffusion-xl-1.0-inpainting-0.1`, runs at 1024px with model CPU offload,
   composited back at native size). Models load lazily and stay resident.
-- **`deink/pipeline.py`** — `remove_tattoo(image, backend=..., mask=None, dilate=15,
+- **`deink/pipeline.py`** — `remove_tattoo(image, backend=..., mask=None, dilate=8,
   feather=5, ...) -> RemovalResult`. Pass a `mask` to skip detection (interactive path).
   `refine_mask` dilates (cover ink edges) and feathers (seamless blend). Returns `.image`,
   `.mask`, `.raw_mask`, `.found`. Pixels outside the mask are left bit-identical to the input.
