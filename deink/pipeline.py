@@ -58,6 +58,7 @@ def remove_tattoo(
     inpainter: Inpainter | None = None,
     box_threshold: float = 0.25,
     text_threshold: float = 0.2,
+    max_area_frac: float = 0.25,
     tile: bool = False,
     tile_max_area_frac: float = 0.03,
     tiles: int = 2,
@@ -70,6 +71,12 @@ def remove_tattoo(
     mask is used directly — this backs the interactive path. Otherwise the tattoo is
     located automatically via the segmenter. Set ``tile=True`` for tiled detection
     (higher recall on small/faint tattoos, slower).
+
+    ``box_threshold`` / ``text_threshold`` / ``max_area_frac`` tune detection per image:
+    lower thresholds recover fainter tattoos (at the cost of false positives), and
+    ``max_area_frac`` caps how large a detection box may be relative to the image (the
+    guard against SAM masking the whole subject). See ``scripts/sweep_detect.py`` to sweep
+    combinations for a given image.
     """
     image = ensure_pil(image)
 
@@ -81,6 +88,7 @@ def remove_tattoo(
             prompt,
             box_threshold=box_threshold,
             text_threshold=text_threshold,
+            max_area_frac=max_area_frac,
             tile=tile,
             tile_max_area_frac=tile_max_area_frac,
             tiles=tiles,

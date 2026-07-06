@@ -62,6 +62,15 @@ Quick end-to-end check on a sample image:
 ```bash
 python scripts/smoke_test.py --backend lama
 # writes scratch/smoke_lama.png (before | after) and scratch/smoke_lama_mask.png
+# tune detection: --box-threshold / --text-threshold / --max-area-frac / --prompt / --tile
+```
+
+If auto-detect misses a tattoo, sweep detection settings on that image to find ones that catch
+it (detection only, no inpaint — fast):
+
+```bash
+python scripts/sweep_detect.py path/to/image.jpg --out scratch/
+# prints n_boxes + area fractions per prompt/threshold combo; --out writes box-overlay PNGs
 ```
 
 ## How it works
@@ -103,9 +112,15 @@ near-fully-tattooed subject GroundingDINO's top box is the whole person (correct
 skin when the tattoo *is* most of the visible skin. Both point at a pixel-level tattoo
 segmenter. Options, cheapest first:
 
-- **Prompt / threshold tuning.** Expose and sweep `box_threshold` / `text_threshold` /
-  `max_area_frac` per image; try compound prompts (`"tattoo. ink drawing on skin."`). Cheap,
-  partial gains. Already parameterized in `deink/pipeline.remove_tattoo`.
+- **Prompt / threshold tuning.** ✅ *Exposed.* `box_threshold` / `text_threshold` /
+  `max_area_frac` and the detection `prompt` are all parameters of
+  `deink/pipeline.remove_tattoo`, sliders under **Advanced detection** in the app, and flags on
+  `scripts/smoke_test.py` (`--box-threshold` / `--text-threshold` / `--max-area-frac`). Lower
+  thresholds recover fainter tattoos; try compound prompts (`"tattoo. ink drawing on skin."`).
+  `scripts/sweep_detect.py IMAGE` sweeps prompt/threshold/area combinations on a single image
+  (detection only, fast) and reports box counts + area fractions to pick per-image settings.
+  Cheap, partial gains. Caveat below still holds: raising `box_threshold` to cut false positives
+  costs more recall than it saves — this knob is for *lowering* thresholds on hard images.
 - **Tile-and-detect.** ✅ *Implemented.* Detection runs on overlapping crops (plus the full
   image); boxes are offset back to full-image coordinates and NMS-merged. Because tiling only
   needs to recover tattoos too small to catch at full scale, tile-derived boxes are capped hard

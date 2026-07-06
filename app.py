@@ -74,6 +74,9 @@ def _(mo):
     tile = mo.ui.checkbox(value=False, label="Tile detect (slower, better recall)")
     dilate = mo.ui.slider(0, 40, value=8, label="Mask grow (px)")
     feather = mo.ui.slider(0, 25, value=5, label="Feather (px)")
+    box_threshold = mo.ui.slider(0.0, 0.6, step=0.05, value=0.25, label="Box threshold")
+    text_threshold = mo.ui.slider(0.0, 0.6, step=0.05, value=0.2, label="Text threshold")
+    max_area_frac = mo.ui.slider(0.05, 1.0, step=0.05, value=0.25, label="Max box area frac")
     run = mo.ui.run_button(label="Remove tattoo")
 
     controls = mo.vstack(
@@ -81,26 +84,47 @@ def _(mo):
             mo.hstack([upload, mask_upload], justify="start"),
             mo.hstack([backend, prompt, tile], justify="start"),
             mo.hstack([dilate, feather], justify="start"),
+            mo.accordion(
+                {
+                    "▸ Advanced detection (lower thresholds = more recall, more false positives)":
+                        mo.hstack([box_threshold, text_threshold, max_area_frac], justify="start")
+                }
+            ),
             run,
         ]
     )
     controls
-    return backend, dilate, feather, mask_upload, prompt, run, tile, upload
+    return (
+        backend,
+        box_threshold,
+        dilate,
+        feather,
+        mask_upload,
+        max_area_frac,
+        prompt,
+        run,
+        text_threshold,
+        tile,
+        upload,
+    )
 
 
 @app.cell
 def _(
     Image,
     backend,
+    box_threshold,
     dilate,
     feather,
     get_inpainter,
     get_segmenter,
     io,
     mask_upload,
+    max_area_frac,
     mo,
     prompt,
     run,
+    text_threshold,
     tile,
     time,
     to_png,
@@ -126,6 +150,9 @@ def _(
         tile=tile.value,
         dilate=dilate.value,
         feather=feather.value,
+        box_threshold=box_threshold.value,
+        text_threshold=text_threshold.value,
+        max_area_frac=max_area_frac.value,
         segmenter=get_segmenter(),
         inpainter=get_inpainter(),
     )
@@ -133,7 +160,8 @@ def _(
 
     if not result.found:
         status = mo.md(f"⚠️ No tattoo found (backend `{backend.value}`, {elapsed:.1f}s). "
-                       "Try lowering the prompt threshold or upload a mask.")
+                       "Lower the box/text thresholds under **Advanced detection**, try a "
+                       "compound prompt, or upload a mask.")
     else:
         status = mo.md(f"✅ Done in {elapsed:.1f}s using `{backend.value}`.")
 
