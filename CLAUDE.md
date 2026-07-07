@@ -27,7 +27,9 @@ worth using — the diffusion/segmentation models assume a GPU.
 ## Architecture
 
 The pipeline is `detect → segment → refine mask → inpaint → composite`, implemented in the
-`deink/` package:
+`deink/` package. Localization has two interchangeable strategies, chosen by the `localizer`
+knob on `remove_tattoo` (`"box"` default / `"seg"` / `"seg+box"`) — see the `localizer` bullet
+below. Both produce a `bool (H,W)` mask that flows into the same refine→inpaint→composite tail.
 
 - **`deink/segment.py`** — `TattooSegmenter`. `detect_and_segment(image, prompt="a tattoo.")`
   runs an open-vocab detector (text-prompted) then SAM (segmentation), both via HF
@@ -51,6 +53,33 @@ The pipeline is `detect → segment → refine mask → inpaint → composite`, 
     `_owlv2_queries`), has a *single* confidence threshold (so `text_threshold` is ignored on
     the OWLv2 path; `box_threshold` → OWLv2's `threshold`), and its
     `post_process_grounded_object_detection` takes **no `input_ids`**.
+- **`deink/tattooseg.py`** — `TattooMaskSegmenter`. The **custom pixel-level localizer**: a
+  fine-tuned SegFormer (`transformers` `SegformerForSemanticSegmentation`) that emits the tattoo
+  mask *directly*, bypassing box detection + SAM. This is what masks heavily-inked skin the box
+  detector collapses on (on a near-fully-tattooed subject GroundingDINO's top box is the whole
+  person, dropped by `max_area_frac`). `segment(image) -> bool (H,W)` upsamples logits to native
+  size via `post_process_semantic_segmentation` and thresholds the tattoo-class probability
+  (`threshold` is a recall knob). Loads lazily from `data/models/tattoo-segformer/` (override via
+  `DEINK_TATTOOSEG_DIR`); `available()` probes for a checkpoint so callers no-op gracefully until
+  the model is trained.
+  - **`localizer=` knob (not a 4th `detector`):** `detector=` selects a *box* family and only
+    applies to the box path — a semantic segmenter emits a mask, not boxes, so it gets its own
+    knob. `remove_tattoo(..., localizer=...)`: `"box"` (default, no regression) = detector+SAM;
+    `"seg"` = SegFormer only; `"seg+box"` = union of both masks (trivial `|`, higher recall +
+    false positives). `detect_and_segment` branches at the top (box path factored into
+    `_segment_box`), preserving its "sole localization call" invariant; the app dropdown offers
+    `seg`/`seg+box` only when `available()`, and `remove_tattoo` returns `found=False` with a
+    "train the model" message if `seg` is requested with no checkpoint.
+  - **Training/data scripts (no new deps — SegFormer ships in `transformers`, augments use
+    `torchvision.transforms.v2`):** `scripts/derive_masks.py` differences aligned
+    `rawdata/*_{tattoo,clean}` pairs (median-align → LAB ΔE → Otsu w/ absolute floor →
+    morphology → ignore-band trimap) into real masks + a frozen `split.json`;
+    `scripts/gen_synthetic_seg.py` composites `tattoo_clipart` onto `tattooless` skin (clipped to
+    the `mask-predict` silhouette, faded/warped for realism) for unlimited perfect-label pairs;
+    `scripts/train_tattooseg.py` fine-tunes `nvidia/mit-b2` with a curriculum (synthetic warmup →
+    real+synthetic mix), CE(ignore_index=255)+Dice, bf16, `--smoke` for a quick loop check;
+    `scripts/eval_seg.py` scores IoU/recall/precision (+ optional PSNR-to-`clean`) of seg vs. the
+    box+SAM baseline on the held-out split.
 - **`deink/inpaint.py`** — `Inpainter`. Two backends: `"lama"` (simple-lama-inpainting,
   fast, strong skin-texture fill) and `"sdxl"` (`diffusers` `AutoPipelineForInpainting` with
   `diffusers/stable-diffusion-xl-1.0-inpainting-0.1`, runs at 1024px with model CPU offload,
@@ -82,6 +111,21 @@ Image data stays on disk, git-ignored: `data/deinked/{rawdata,tattoo,clean,gen,t
 `data/silhouette/*`, `data/stock/*`, `data/models/`. `data/deinked/test/` and
 `data/stock/laser-removal/` are handy test inputs. Small history CSVs and sample outputs from
 the old training era are committed as a record.
+
+**Seg-training data provenance (do NOT need to rerun the legacy notebooks).** The custom
+segmenter's training inputs already live on disk; the legacy `Deink_01`–`03` notebooks that
+originally produced them do not need to be re-run:
+
+- `data/silhouette/{source,mask,tattooless}` and `data/silhouette/tattoo_clipart` are
+  **hand-curated raw assets** — `Deink_01` merely resizes/renames `data/silhouette/rawdata/*_{source,mask,tattooless}.*`
+  into them (no model involved). If ever regenerated, it's a trivial resize.
+- `data/silhouette/mask-predict/` (body silhouettes) is the **one model-derived artifact** — the
+  output of the retired silhouette U-Net (`Deink_02`/`03`). `gen_synthetic_seg.py` treats it as
+  **optional**: a missing silhouette falls back to "whole image is body" (`--silhouette` to
+  point elsewhere). It only sharpens synthetic realism (keeps composited tattoos on skin), so
+  the retired U-Net is not on the critical path.
+- The *essential* input — the real `data/deinked/rawdata/*_{tattoo,clean}` pairs that
+  `derive_masks.py` differences — is independent of the silhouette track entirely.
 
 ## Legacy
 

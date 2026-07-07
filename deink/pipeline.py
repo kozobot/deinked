@@ -15,6 +15,7 @@ from PIL import Image
 
 from .inpaint import Inpainter
 from .segment import TattooSegmenter
+from .tattooseg import TattooMaskSegmenter
 from .utils import ensure_pil, mask_to_pil
 
 
@@ -56,6 +57,7 @@ def remove_tattoo(
     feather: int = 5,
     segmenter: TattooSegmenter | None = None,
     inpainter: Inpainter | None = None,
+    mask_segmenter: TattooMaskSegmenter | None = None,
     box_threshold: float = 0.25,
     text_threshold: float = 0.2,
     max_area_frac: float = 0.25,
@@ -64,6 +66,7 @@ def remove_tattoo(
     tiles: int = 2,
     overlap: float = 0.2,
     detector: str | None = None,
+    localizer: str = "box",
     **inpaint_kwargs,
 ) -> RemovalResult:
     """Remove tattoos from ``image``.
@@ -79,15 +82,31 @@ def remove_tattoo(
     guard against SAM masking the whole subject). See ``scripts/sweep_detect.py`` to sweep
     combinations for a given image.
 
-    ``detector`` picks the open-vocab detector: ``"gdino"`` (GroundingDINO, default),
-    ``"owlv2"`` (OWLv2 — catches small/faint tattoos GroundingDINO misses; note it has no
-    ``text_threshold``), or ``"ensemble"`` (union of both, NMS-merged, max recall, ~2x
+    ``localizer`` picks how the tattoo is located: ``"box"`` (default) text-prompted box
+    detection + SAM (tuned by ``detector`` / the thresholds / ``tile``); ``"seg"`` the custom
+    fine-tuned pixel segmenter (``mask_segmenter``), which masks heavily inked skin the box
+    path collapses on; or ``"seg+box"`` the union of both. ``"seg"``/``"seg+box"`` need a
+    trained checkpoint — if none is present the call returns ``found=False`` with a message
+    rather than crashing.
+
+    ``detector`` picks the open-vocab detector for the box path: ``"gdino"`` (GroundingDINO,
+    default), ``"owlv2"`` (OWLv2 — catches small/faint tattoos GroundingDINO misses; note it
+    has no ``text_threshold``), or ``"ensemble"`` (union of both, NMS-merged, max recall, ~2x
     detection time). ``None`` uses the segmenter's own default.
     """
     image = ensure_pil(image)
+    localizer = (localizer or "box").lower()
 
     # 1. Localize (or use the supplied mask).
     if mask is None:
+        # The seg path needs a trained checkpoint; no-op gracefully with a clear message
+        # instead of crashing (mirrors the "no tattoo found" outcome).
+        if localizer in ("seg", "seg+box"):
+            mask_segmenter = mask_segmenter or TattooMaskSegmenter()
+            if not mask_segmenter.available(mask_segmenter.checkpoint_dir):
+                empty = mask_to_pil(np.zeros((image.size[1], image.size[0]), dtype=bool))
+                return RemovalResult(image=image, mask=empty, raw_mask=empty, found=False)
+
         segmenter = segmenter or TattooSegmenter()
         raw = segmenter.detect_and_segment(
             image,
@@ -100,6 +119,8 @@ def remove_tattoo(
             tiles=tiles,
             overlap=overlap,
             detector=detector,
+            localizer=localizer,
+            mask_segmenter=mask_segmenter,
         )
     else:
         raw = np.asarray(mask.convert("L")) if isinstance(mask, Image.Image) else np.asarray(mask)

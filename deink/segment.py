@@ -415,7 +415,7 @@ class TattooSegmenter:
         return masks[0, best].numpy().astype(bool)
 
     # --- convenience --------------------------------------------------------
-    def detect_and_segment(
+    def _segment_box(
         self,
         image,
         prompt: str = "a tattoo.",
@@ -428,16 +428,7 @@ class TattooSegmenter:
         overlap: float = 0.2,
         detector: str | None = None,
     ) -> np.ndarray:
-        """Full auto path: detect the prompt, then segment. Empty mask if nothing found.
-
-        Set ``tile=True`` to detect on overlapping crops (higher recall for small/faint
-        tattoos, slower) via ``detect_boxes_tiled``. ``tile_max_area_frac`` caps how large
-        a tile-derived box may be (fraction of the full image) — the guard against SAM
-        segmenting a whole limb from a loose crop box.
-
-        ``detector`` ("gdino", "owlv2", or "ensemble") overrides the instance's detector
-        family for this call, so a cached segmenter can switch detectors without rebuilding.
-        """
+        """The box-detection + SAM localization path → bool (H, W) mask (empty if none)."""
         image = ensure_pil(image)
         if tile:
             boxes = self.detect_boxes_tiled(
@@ -463,3 +454,58 @@ class TattooSegmenter:
         if len(boxes) == 0:
             return empty_mask(image.size)
         return self.segment_from_boxes(image, boxes)
+
+    def detect_and_segment(
+        self,
+        image,
+        prompt: str = "a tattoo.",
+        box_threshold: float = 0.25,
+        text_threshold: float = 0.2,
+        max_area_frac: float = 0.25,
+        tile: bool = False,
+        tile_max_area_frac: float = 0.03,
+        tiles: int = 2,
+        overlap: float = 0.2,
+        detector: str | None = None,
+        localizer: str = "box",
+        mask_segmenter=None,
+    ) -> np.ndarray:
+        """Full auto localization → bool (H, W) mask. Empty mask if nothing found.
+
+        This is the pipeline's sole localization call, so all three localization strategies
+        branch here:
+
+        - ``localizer="box"`` (default): text-prompted box detection + SAM — the original
+          path. ``detector`` ("gdino"/"owlv2"/"ensemble") picks the box detector; ``tile`` /
+          ``tile_max_area_frac`` enable tiled detection for small/faint tattoos.
+        - ``localizer="seg"``: the fine-tuned SegFormer (``mask_segmenter``) emits the mask
+          directly, bypassing box detection and SAM. This is the path that masks heavily
+          tattooed skin the box detector collapses on. All the box-only knobs
+          (``detector``/thresholds/``tile``) are inert here.
+        - ``localizer="seg+box"``: union of both masks — seg catches ink-covered skin,
+          box+SAM catches crisp isolated tattoos. Higher recall, more false positives.
+
+        ``localizer`` in ("seg", "seg+box") requires ``mask_segmenter`` (a
+        ``TattooMaskSegmenter``); the caller is expected to have checked ``.available()``.
+        """
+        image = ensure_pil(image)
+        localizer = (localizer or "box").lower()
+
+        if localizer in ("seg", "seg+box"):
+            if mask_segmenter is None:
+                raise ValueError(
+                    f"localizer={localizer!r} requires a mask_segmenter (TattooMaskSegmenter)."
+                )
+            seg_mask = mask_segmenter.segment(image)
+            if localizer == "seg":
+                return seg_mask
+            box_mask = self._segment_box(
+                image, prompt, box_threshold, text_threshold, max_area_frac,
+                tile, tile_max_area_frac, tiles, overlap, detector,
+            )
+            return seg_mask | box_mask
+
+        return self._segment_box(
+            image, prompt, box_threshold, text_threshold, max_area_frac,
+            tile, tile_max_area_frac, tiles, overlap, detector,
+        )

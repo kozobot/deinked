@@ -55,6 +55,10 @@ from deink import remove_tattoo
 img = Image.open("photo.jpg")
 result = remove_tattoo(img, backend="lama")   # or backend="sdxl"
 result.image.save("clean.jpg")
+
+# Use the custom pixel-level tattoo segmenter instead of box-detection + SAM (see below):
+result = remove_tattoo(img, localizer="seg")      # SegFormer only
+result = remove_tattoo(img, localizer="seg+box")  # union of seg + box path (max recall)
 ```
 
 Quick end-to-end check on a sample image:
@@ -63,6 +67,7 @@ Quick end-to-end check on a sample image:
 python scripts/smoke_test.py --backend lama
 # writes scratch/smoke_lama.png (before | after) and scratch/smoke_lama_mask.png
 # tune detection: --detector gdino|owlv2|ensemble / --box-threshold / --text-threshold / --max-area-frac / --prompt / --tile
+# pick the localizer: --localizer box|seg|seg+box   (seg / seg+box need a trained checkpoint — see below)
 ```
 
 If auto-detect misses a tattoo, sweep detection settings on that image to find ones that catch
@@ -73,6 +78,49 @@ python scripts/sweep_detect.py path/to/image.jpg --out scratch/
 # prints n_boxes + area fractions per prompt/threshold combo; --out writes box-overlay PNGs
 ```
 
+### Custom tattoo segmentation model (`localizer="seg"`)
+
+The box detector + SAM path misses on heavily-tattooed subjects (its top box becomes the whole
+person, which gets dropped, so recall collapses). The fix is a **pixel-level** segmenter — a
+fine-tuned [SegFormer](https://huggingface.co/nvidia/mit-b2) that masks the inked skin directly.
+It stays transformers-native (no CUDA-ext build, no new deps). Once trained, select it with
+`localizer="seg"` (or `"seg+box"` to union it with the box path); the app dropdown exposes both
+automatically when a checkpoint is present. `"box"` remains the default.
+
+**Training is a one-time GPU run.** Build the data, train, then evaluate against the baseline:
+
+```bash
+# 1. Data prep (uses the paired data under data/deinked + data/silhouette, git-ignored on disk).
+python scripts/derive_masks.py          # real masks from tattoo/clean diffs → data/silhouette/derived/
+                                        #   + a frozen train/eval split (split.json); QC sheet in scratch/
+python scripts/gen_synthetic_seg.py --n 400   # composite clipart onto skin → data/silhouette/synthetic_gen/
+
+# 2. Fine-tune SegFormer → data/models/tattoo-segformer/  (add --smoke for a fast loop check first)
+python scripts/train_tattooseg.py
+
+# 3. Compare the seg model against the box+SAM baseline on the held-out split
+python scripts/eval_seg.py --methods gdino ensemble+tile seg seg+box --downstream
+#   reports foreground IoU / recall / precision (+ PSNR-to-clean); the bar is: seg beats the
+#   box baselines on recall without tanking precision.
+```
+
+Notes:
+- The checkpoint lives at `data/models/tattoo-segformer/`; point elsewhere with the
+  `DEINK_TATTOOSEG_DIR` env var. Until a checkpoint exists, `localizer="seg"` no-ops gracefully
+  (returns "not found" with a message) and the app hides the seg options.
+- `train_tattooseg.py` uses a curriculum (synthetic warm-up → real+synthetic fine-tune); tune
+  `--encoder nvidia/mit-b1` (lighter, if it overfits), `--epochs-pretrain` / `--epochs-finetune`,
+  `--fg-weight`, `--real-frac`. Trains at 512 px in bf16 (fits 16 GB).
+- **Data provenance — you do *not* need to re-run the legacy notebooks.** `gen_synthetic_seg.py`
+  reads `data/silhouette/{tattooless,tattoo_clipart}` (hand-curated raw assets — `Deink_01` only
+  resized them from `data/silhouette/rawdata/`, no model) and `data/silhouette/mask-predict/`
+  (body silhouettes from the retired U-Net). Those files already exist on disk; and the
+  silhouette is **optional** — a missing one falls back to "whole image is body," so the retired
+  U-Net is not required. The essential real signal comes from the `data/deinked/rawdata` pairs
+  via `derive_masks.py`, which is independent of the silhouette track. See `CLAUDE.md` → *Data
+  layout* for the full breakdown.
+- See Roadmap §1 and `CLAUDE.md` for the data sources and design.
+
 ## How it works
 
 - **`deink/segment.py`** — `TattooSegmenter`: text-prompted detection + SAM segmentation, via
@@ -80,6 +128,10 @@ python scripts/sweep_detect.py path/to/image.jpg --out scratch/
   (`detector=`): GroundingDINO (default), OWLv2, or an `ensemble` union of both. Subject-sized
   detection boxes are dropped so SAM masks the individual tattoos, not the whole person.
   `segment_from_points` backs the interactive fallback.
+- **`deink/tattooseg.py`** — `TattooMaskSegmenter`: the custom pixel-level localizer, a
+  fine-tuned SegFormer that emits the tattoo mask directly (no boxes, no SAM) so it masks
+  heavily-inked skin the box detector collapses on. Selected with `localizer="seg"` /
+  `"seg+box"`; loads a checkpoint trained by `scripts/train_tattooseg.py` (see Roadmap §1).
 - **`deink/inpaint.py`** — `Inpainter`: **LaMa** (fast, excellent skin-texture fill) and
   **SDXL inpainting** (semantic fill for harder regions). Models load lazily; SDXL uses
   model CPU offload to fit in 16 GB.
@@ -154,15 +206,22 @@ segmenter. Options, cheapest first:
   Note: raising `box_threshold` to cut false positives was measured to cost far more recall than
   it saves (faint tattoos and false positives share the same low-score band) — prefer a better
   detector over threshold tuning.
-- **Custom tattoo segmentation model (highest value).** Fine-tune a *pixel-level* segmenter
-  specifically for tattoos and drop GroundingDINO + the box→SAM path from the auto flow entirely.
-  This is the only thing that fixes the heavy-coverage ceiling above: it masks exactly the inked
-  skin even at high body coverage, instead of collapsing to a whole-person box. The `legacy/`
-  silhouette track is exactly the reusable asset — it already learned tattoo masks and has curated
-  `source`/`mask` pairs plus a synthetic-data generator (clipart composited onto skin). Retarget
-  that data to fine-tune e.g. a SAM/SAM 2 decoder, a Mask2Former/SegFormer/U-Net semantic head, or
-  a YOLO-seg head. The single change most likely to make auto-removal "just work." See
-  `legacy/README.md`.
+- **Custom tattoo segmentation model (highest value).** ✅ *Implemented (SegFormer).* A
+  *pixel-level* tattoo segmenter, selectable via the `localizer` knob, that emits the mask
+  directly and drops GroundingDINO + the box→SAM path from the auto flow — the one thing that
+  fixes the heavy-coverage ceiling above: it masks exactly the inked skin even at high body
+  coverage instead of collapsing to a whole-person box. `remove_tattoo(img, localizer="seg")`
+  (or `"seg+box"` to union with the box path; `"box"` stays the default until eval proves seg —
+  same no-regression discipline as gdino/owlv2). The model is a fine-tuned `nvidia/mit-b2`
+  SegFormer (`deink/tattooseg.py` `TattooMaskSegmenter`), staying transformers-native (no
+  CUDA-ext build, no new deps — augments use `torchvision.transforms.v2`). Training reuses the
+  `legacy/` silhouette track as intended, across three data sources: `scripts/gen_synthetic_seg.py`
+  composites clipart onto tattoo-free skin (perfect labels, unlimited), `scripts/derive_masks.py`
+  differences the aligned `data/deinked/rawdata/*_{tattoo,clean}` pairs into real masks, and the
+  30 curated `source`/`mask` pairs. `scripts/train_tattooseg.py` fine-tunes with a
+  synthetic→real curriculum; `scripts/eval_seg.py` scores recall/IoU/precision vs. the box+SAM
+  baseline on a held-out split. Train with `python scripts/train_tattooseg.py`, then the app
+  dropdown exposes `seg`/`seg+box`. See `legacy/README.md`.
 - **Human-in-the-loop mask editing.** Even with a great detector, a shippable tool wants a
   brush/eraser to correct masks. Today the app supports uploading a full mask; an in-app
   SAM-click ("click a tattoo, SAM grows the region") via `segment_from_points` is the natural

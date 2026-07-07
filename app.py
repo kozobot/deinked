@@ -23,15 +23,23 @@ def _():
     import marimo as mo
     from PIL import Image
 
-    from deink import Inpainter, TattooSegmenter, remove_tattoo
+    from deink import Inpainter, TattooMaskSegmenter, TattooSegmenter, remove_tattoo
 
     @functools.lru_cache(maxsize=1)
     def get_segmenter():
         return TattooSegmenter()
 
     @functools.lru_cache(maxsize=1)
+    def get_mask_segmenter():
+        return TattooMaskSegmenter()
+
+    @functools.lru_cache(maxsize=1)
     def get_inpainter():
         return Inpainter()
+
+    # Offer the custom-seg localization paths only when a fine-tuned checkpoint exists.
+    seg_available = TattooMaskSegmenter.available()
+    localizer_choices = ["box", "seg", "seg+box"] if seg_available else ["box"]
 
     def to_png(img: "Image.Image") -> bytes:
         buf = io.BytesIO()
@@ -41,10 +49,13 @@ def _():
     return (
         Image,
         get_inpainter,
+        get_mask_segmenter,
         get_segmenter,
         io,
+        localizer_choices,
         mo,
         remove_tattoo,
+        seg_available,
         time,
         to_png,
     )
@@ -64,12 +75,17 @@ def _(mo):
 
 
 @app.cell
-def _(mo):
+def _(localizer_choices, mo, seg_available):
     upload = mo.ui.file(kind="button", label="Upload image", filetypes=[".png", ".jpg", ".jpeg"])
     mask_upload = mo.ui.file(
         kind="button", label="Optional mask (white = remove)", filetypes=[".png", ".jpg", ".jpeg"]
     )
     backend = mo.ui.dropdown(["lama", "sdxl"], value="lama", label="Inpaint backend")
+    localizer = mo.ui.dropdown(
+        localizer_choices,
+        value="box",
+        label="Localizer" + ("" if seg_available else " (train seg model to enable seg)"),
+    )
     detector = mo.ui.dropdown(["gdino", "owlv2", "ensemble"], value="gdino", label="Detector")
     prompt = mo.ui.text(value="a tattoo.", label="Detection prompt")
     tile = mo.ui.checkbox(value=False, label="Tile detect (slower, better recall)")
@@ -83,7 +99,7 @@ def _(mo):
     controls = mo.vstack(
         [
             mo.hstack([upload, mask_upload], justify="start"),
-            mo.hstack([backend, detector, prompt, tile], justify="start"),
+            mo.hstack([backend, localizer, detector, prompt, tile], justify="start"),
             mo.hstack([dilate, feather], justify="start"),
             mo.accordion(
                 {
@@ -101,6 +117,7 @@ def _(mo):
         detector,
         dilate,
         feather,
+        localizer,
         mask_upload,
         max_area_frac,
         prompt,
@@ -120,8 +137,10 @@ def _(
     dilate,
     feather,
     get_inpainter,
+    get_mask_segmenter,
     get_segmenter,
     io,
+    localizer,
     mask_upload,
     max_area_frac,
     mo,
@@ -150,6 +169,7 @@ def _(
         backend=backend.value,
         prompt=prompt.value,
         mask=user_mask,
+        localizer=localizer.value,
         detector=detector.value,
         tile=tile.value,
         dilate=dilate.value,
@@ -158,6 +178,7 @@ def _(
         text_threshold=text_threshold.value,
         max_area_frac=max_area_frac.value,
         segmenter=get_segmenter(),
+        mask_segmenter=get_mask_segmenter(),
         inpainter=get_inpainter(),
     )
     elapsed = time.time() - t0

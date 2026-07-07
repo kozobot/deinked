@@ -48,12 +48,16 @@ def main():
     ap.add_argument("--tile", action="store_true", help="tiled detection (higher recall, slower)")
     ap.add_argument("--detector", default="gdino", choices=["gdino", "owlv2", "ensemble"],
                     help="open-vocab detector: gdino (default), owlv2, or ensemble (both, ~2x slower)")
+    ap.add_argument("--localizer", default="box", choices=["box", "seg", "seg+box"],
+                    help="how to locate the tattoo: box (detector+SAM, default), seg (custom "
+                         "SegFormer), or seg+box (union). seg needs a trained checkpoint.")
     args = ap.parse_args()
 
     src = args.image or find_sample()
     if not src:
         raise SystemExit("No image given and no sample found under data/.")
-    print(f"input: {src}  backend: {args.backend}  detector: {args.detector}")
+    print(f"input: {src}  backend: {args.backend}  detector: {args.detector}  "
+          f"localizer: {args.localizer}")
 
     img = Image.open(src).convert("RGB")
     t0 = time.time()
@@ -62,6 +66,7 @@ def main():
         backend=args.backend,
         prompt=args.prompt,
         detector=args.detector,
+        localizer=args.localizer,
         box_threshold=args.box_threshold,
         text_threshold=args.text_threshold,
         max_area_frac=args.max_area_frac,
