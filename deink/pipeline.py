@@ -67,6 +67,7 @@ def remove_tattoo(
     overlap: float = 0.2,
     detector: str | None = None,
     localizer: str = "box",
+    seg_threshold: float | None = None,
     **inpaint_kwargs,
 ) -> RemovalResult:
     """Remove tattoos from ``image``.
@@ -87,7 +88,9 @@ def remove_tattoo(
     fine-tuned pixel segmenter (``mask_segmenter``), which masks heavily inked skin the box
     path collapses on; or ``"seg+box"`` the union of both. ``"seg"``/``"seg+box"`` need a
     trained checkpoint — if none is present the call returns ``found=False`` with a message
-    rather than crashing.
+    rather than crashing. ``seg_threshold`` (0–1) tunes the seg model's probability cutoff:
+    raise it to tighten an over-covering mask, lower it to recover faint ink (``None`` = the
+    model's default, 0.5).
 
     ``detector`` picks the open-vocab detector for the box path: ``"gdino"`` (GroundingDINO,
     default), ``"owlv2"`` (OWLv2 — catches small/faint tattoos GroundingDINO misses; note it
@@ -121,6 +124,7 @@ def remove_tattoo(
             detector=detector,
             localizer=localizer,
             mask_segmenter=mask_segmenter,
+            seg_threshold=seg_threshold,
         )
     else:
         raw = np.asarray(mask.convert("L")) if isinstance(mask, Image.Image) else np.asarray(mask)

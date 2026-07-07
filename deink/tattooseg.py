@@ -94,29 +94,35 @@ class TattooMaskSegmenter:
         return self._processor, self._model
 
     # --- inference ----------------------------------------------------------
-    def segment(self, image) -> np.ndarray:
+    def segment(self, image, threshold: float | None = None) -> np.ndarray:
         """Return a boolean (H, W) tattoo mask at the image's native resolution.
 
         SegFormer emits logits at H/4; ``post_process_semantic_segmentation`` upsamples them
         back to ``(H, W)`` — so the returned mask lines up pixel-for-pixel with the input and
         can flow straight into ``refine_mask``/inpainting like any other localization mask.
+
+        ``threshold`` overrides the instance default for this call: it is the tattoo-class
+        probability cutoff, and the primary knob for tightening/loosening the mask. Raise it to
+        shrink an over-covering mask (higher precision); lower it to recover faint ink (higher
+        recall).
         """
         import torch
 
         image = ensure_pil(image)
+        thr = self.threshold if threshold is None else threshold
         processor, model = self._load()
         inputs = processor(images=image, return_tensors="pt").to(self.device)
         with torch.no_grad():
             logits = model(**inputs).logits  # (1, num_labels, H/4, W/4)
 
         # Upsample to native size, then threshold the tattoo-class probability. We threshold a
-        # probability (not argmax) so ``threshold`` is a real recall knob: lowering it recovers
-        # fainter ink that a plain argmax would lose to the background class.
+        # probability (not argmax) so ``threshold`` is a real recall/precision knob: lowering it
+        # recovers fainter ink, raising it trims an over-covering mask.
         upsampled = torch.nn.functional.interpolate(
             logits, size=image.size[::-1], mode="bilinear", align_corners=False
         )
         probs = upsampled.softmax(dim=1)[0, TATTOO_LABEL]  # (H, W)
-        mask = (probs >= self.threshold).cpu().numpy().astype(bool)
+        mask = (probs >= thr).cpu().numpy().astype(bool)
         if not mask.any():
             return empty_mask(image.size)
         return mask

@@ -94,6 +94,8 @@ def _(localizer_choices, mo, seg_available):
     box_threshold = mo.ui.slider(0.0, 0.6, step=0.05, value=0.25, label="Box threshold")
     text_threshold = mo.ui.slider(0.0, 0.6, step=0.05, value=0.2, label="Text threshold")
     max_area_frac = mo.ui.slider(0.05, 1.0, step=0.05, value=0.25, label="Max box area frac")
+    seg_threshold = mo.ui.slider(0.3, 0.95, step=0.05, value=0.5,
+                                 label="Seg threshold (higher = tighter mask)")
     run = mo.ui.run_button(label="Remove tattoo")
 
     controls = mo.vstack(
@@ -104,7 +106,8 @@ def _(localizer_choices, mo, seg_available):
             mo.accordion(
                 {
                     "▸ Advanced detection (lower thresholds = more recall, more false positives)":
-                        mo.hstack([box_threshold, text_threshold, max_area_frac], justify="start")
+                        mo.hstack([box_threshold, text_threshold, max_area_frac, seg_threshold],
+                                  justify="start")
                 }
             ),
             run,
@@ -122,6 +125,7 @@ def _(localizer_choices, mo, seg_available):
         max_area_frac,
         prompt,
         run,
+        seg_threshold,
         text_threshold,
         tile,
         upload,
@@ -146,6 +150,7 @@ def _(
     mo,
     prompt,
     run,
+    seg_threshold,
     text_threshold,
     tile,
     time,
@@ -170,6 +175,7 @@ def _(
         prompt=prompt.value,
         mask=user_mask,
         localizer=localizer.value,
+        seg_threshold=seg_threshold.value,
         detector=detector.value,
         tile=tile.value,
         dilate=dilate.value,

@@ -469,6 +469,7 @@ class TattooSegmenter:
         detector: str | None = None,
         localizer: str = "box",
         mask_segmenter=None,
+        seg_threshold: float | None = None,
     ) -> np.ndarray:
         """Full auto localization → bool (H, W) mask. Empty mask if nothing found.
 
@@ -487,6 +488,8 @@ class TattooSegmenter:
 
         ``localizer`` in ("seg", "seg+box") requires ``mask_segmenter`` (a
         ``TattooMaskSegmenter``); the caller is expected to have checked ``.available()``.
+        ``seg_threshold`` overrides the seg model's probability cutoff for this call (raise it
+        to tighten an over-covering mask); ignored on the pure box path.
         """
         image = ensure_pil(image)
         localizer = (localizer or "box").lower()
@@ -496,7 +499,7 @@ class TattooSegmenter:
                 raise ValueError(
                     f"localizer={localizer!r} requires a mask_segmenter (TattooMaskSegmenter)."
                 )
-            seg_mask = mask_segmenter.segment(image)
+            seg_mask = mask_segmenter.segment(image, threshold=seg_threshold)
             if localizer == "seg":
                 return seg_mask
             box_mask = self._segment_box(

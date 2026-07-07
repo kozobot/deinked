@@ -51,6 +51,8 @@ def main():
     ap.add_argument("--localizer", default="box", choices=["box", "seg", "seg+box"],
                     help="how to locate the tattoo: box (detector+SAM, default), seg (custom "
                          "SegFormer), or seg+box (union). seg needs a trained checkpoint.")
+    ap.add_argument("--seg-threshold", type=float, default=None,
+                    help="seg probability cutoff (raise to tighten an over-covering seg mask)")
     args = ap.parse_args()
 
     src = args.image or find_sample()
@@ -67,6 +69,7 @@ def main():
         prompt=args.prompt,
         detector=args.detector,
         localizer=args.localizer,
+        seg_threshold=args.seg_threshold,
         box_threshold=args.box_threshold,
         text_threshold=args.text_threshold,
         max_area_frac=args.max_area_frac,
