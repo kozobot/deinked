@@ -23,15 +23,25 @@ def _():
     import marimo as mo
     from PIL import Image
 
-    from deink import Inpainter, TattooSegmenter, remove_tattoo
+    from deink import Inpainter, TattooMaskSegmenter, TattooSegmenter, remove_tattoo
 
     @functools.lru_cache(maxsize=1)
     def get_segmenter():
         return TattooSegmenter()
 
     @functools.lru_cache(maxsize=1)
+    def get_mask_segmenter():
+        return TattooMaskSegmenter()
+
+    @functools.lru_cache(maxsize=1)
     def get_inpainter():
         return Inpainter()
+
+    # Offer the custom-seg localization paths only when a fine-tuned checkpoint exists, and
+    # default to "seg" when it does — it beats the box+SAM baseline on recall *and* precision.
+    seg_available = TattooMaskSegmenter.available()
+    localizer_choices = ["seg", "box", "seg+box"] if seg_available else ["box"]
+    localizer_default = "seg" if seg_available else "box"
 
     def to_png(img: "Image.Image") -> bytes:
         buf = io.BytesIO()
@@ -41,10 +51,14 @@ def _():
     return (
         Image,
         get_inpainter,
+        get_mask_segmenter,
         get_segmenter,
         io,
+        localizer_choices,
+        localizer_default,
         mo,
         remove_tattoo,
+        seg_available,
         time,
         to_png,
     )
@@ -64,12 +78,17 @@ def _(mo):
 
 
 @app.cell
-def _(mo):
+def _(localizer_choices, localizer_default, mo, seg_available):
     upload = mo.ui.file(kind="button", label="Upload image", filetypes=[".png", ".jpg", ".jpeg"])
     mask_upload = mo.ui.file(
         kind="button", label="Optional mask (white = remove)", filetypes=[".png", ".jpg", ".jpeg"]
     )
     backend = mo.ui.dropdown(["lama", "sdxl"], value="lama", label="Inpaint backend")
+    localizer = mo.ui.dropdown(
+        localizer_choices,
+        value=localizer_default,
+        label="Localizer" + ("" if seg_available else " (train seg model to enable seg)"),
+    )
     detector = mo.ui.dropdown(["gdino", "owlv2", "ensemble"], value="gdino", label="Detector")
     prompt = mo.ui.text(value="a tattoo.", label="Detection prompt")
     tile = mo.ui.checkbox(value=False, label="Tile detect (slower, better recall)")
@@ -78,17 +97,20 @@ def _(mo):
     box_threshold = mo.ui.slider(0.0, 0.6, step=0.05, value=0.25, label="Box threshold")
     text_threshold = mo.ui.slider(0.0, 0.6, step=0.05, value=0.2, label="Text threshold")
     max_area_frac = mo.ui.slider(0.05, 1.0, step=0.05, value=0.25, label="Max box area frac")
+    seg_threshold = mo.ui.slider(0.3, 0.95, step=0.05, value=0.5,
+                                 label="Seg threshold (higher = tighter mask)")
     run = mo.ui.run_button(label="Remove tattoo")
 
     controls = mo.vstack(
         [
             mo.hstack([upload, mask_upload], justify="start"),
-            mo.hstack([backend, detector, prompt, tile], justify="start"),
+            mo.hstack([backend, localizer, detector, prompt, tile], justify="start"),
             mo.hstack([dilate, feather], justify="start"),
             mo.accordion(
                 {
                     "▸ Advanced detection (lower thresholds = more recall, more false positives)":
-                        mo.hstack([box_threshold, text_threshold, max_area_frac], justify="start")
+                        mo.hstack([box_threshold, text_threshold, max_area_frac, seg_threshold],
+                                  justify="start")
                 }
             ),
             run,
@@ -101,10 +123,12 @@ def _(mo):
         detector,
         dilate,
         feather,
+        localizer,
         mask_upload,
         max_area_frac,
         prompt,
         run,
+        seg_threshold,
         text_threshold,
         tile,
         upload,
@@ -120,13 +144,16 @@ def _(
     dilate,
     feather,
     get_inpainter,
+    get_mask_segmenter,
     get_segmenter,
     io,
+    localizer,
     mask_upload,
     max_area_frac,
     mo,
     prompt,
     run,
+    seg_threshold,
     text_threshold,
     tile,
     time,
@@ -150,6 +177,8 @@ def _(
         backend=backend.value,
         prompt=prompt.value,
         mask=user_mask,
+        localizer=localizer.value,
+        seg_threshold=seg_threshold.value,
         detector=detector.value,
         tile=tile.value,
         dilate=dilate.value,
@@ -158,6 +187,7 @@ def _(
         text_threshold=text_threshold.value,
         max_area_frac=max_area_frac.value,
         segmenter=get_segmenter(),
+        mask_segmenter=get_mask_segmenter(),
         inpainter=get_inpainter(),
     )
     elapsed = time.time() - t0
