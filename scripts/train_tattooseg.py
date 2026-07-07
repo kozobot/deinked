@@ -33,6 +33,9 @@ import os
 import random
 import sys
 
+# Reduce allocator fragmentation on a shared/constrained GPU — must be set before CUDA init.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -203,13 +206,15 @@ def set_encoder_requires_grad(model, flag):
 
 
 def run_stage(model, loader, val_loader, device, epochs, lr_enc, lr_head, fg_weight,
-              freeze_epochs, tag, best_dice, out_dir, processor):
+              freeze_epochs, tag, best_dice, out_dir, processor, accum=1):
     enc_params = list(model.segformer.parameters())
     head_params = list(model.decode_head.parameters())
     opt = torch.optim.AdamW(
         [{"params": enc_params, "lr": lr_enc}, {"params": head_params, "lr": lr_head}],
         weight_decay=0.01)
-    steps = max(1, epochs * len(loader))
+    # One scheduler step per *optimizer* step (i.e. per accumulation window), not per batch.
+    opt_steps_per_epoch = math.ceil(len(loader) / accum)
+    steps = max(1, epochs * opt_steps_per_epoch)
     sched = torch.optim.lr_scheduler.OneCycleLR(
         opt, max_lr=[lr_enc, lr_head], total_steps=steps, pct_start=0.1)
 
@@ -217,18 +222,21 @@ def run_stage(model, loader, val_loader, device, epochs, lr_enc, lr_head, fg_wei
         set_encoder_requires_grad(model, ep >= freeze_epochs)
         model.train()
         running = 0.0
-        for image, target in loader:
+        n_batches = len(loader)
+        opt.zero_grad()
+        for i, (image, target) in enumerate(loader):
             image, target = image.to(device), target.to(device)
             with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
                                 enabled=(device.type == "cuda")):
                 logits = _upsample(model(pixel_values=image).logits, target.shape[-2:])
                 loss = seg_loss(logits.float(), target, fg_weight)
-            opt.zero_grad()
-            loss.backward()
-            opt.step()
-            sched.step()
+            (loss / accum).backward()  # scale so accumulated grads match a true large batch
+            if (i + 1) % accum == 0 or (i + 1) == n_batches:
+                opt.step()
+                sched.step()
+                opt.zero_grad()
             running += loss.item()
-        line = f"[{tag}] epoch {ep + 1}/{epochs} loss={running / len(loader):.4f}"
+        line = f"[{tag}] epoch {ep + 1}/{epochs} loss={running / n_batches:.4f}"
         if val_loader is not None:
             iou, dice = evaluate(model, val_loader, device)
             line += f"  val_IoU={iou:.3f} val_Dice={dice:.3f}"
@@ -251,7 +259,11 @@ def main():
     ap.add_argument("--encoder", default="nvidia/mit-b2", help="use nvidia/mit-b1 if it overfits")
     ap.add_argument("--out", default=OUT_DIR)
     ap.add_argument("--size", type=int, default=512)
-    ap.add_argument("--batch", type=int, default=8)
+    ap.add_argument("--batch", type=int, default=4, help="per-step batch; lower on a busy GPU")
+    ap.add_argument("--grad-accum", type=int, default=2,
+                    help="accumulate this many batches per optimizer step (effective batch = batch*grad-accum)")
+    ap.add_argument("--no-grad-checkpoint", action="store_true",
+                    help="disable gradient checkpointing (faster, but much more VRAM)")
     ap.add_argument("--epochs-pretrain", type=int, default=15)
     ap.add_argument("--epochs-finetune", type=int, default=25)
     ap.add_argument("--freeze-epochs", type=int, default=2)
@@ -293,6 +305,10 @@ def main():
         args.encoder, num_labels=2, id2label=id2label,
         label2id={v: k for k, v in id2label.items()}, ignore_mismatched_sizes=True,
     ).to(device)
+    if not args.no_grad_checkpoint:
+        # Trades ~20% compute for a large activation-memory saving — the main OOM lever on a
+        # 16 GB (or shared) card. use_reentrant=False so it works even while the encoder is frozen.
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
 
     best = -1.0
     # Stage A — synthetic warmup.
@@ -300,7 +316,7 @@ def main():
         loader = make_loader(items["synthetic"], args.size, args.batch, train=True)
         best = run_stage(model, loader, val_loader, device, args.epochs_pretrain,
                          args.lr_enc, args.lr_head, args.fg_weight, args.freeze_epochs,
-                         "pretrain", best, args.out, processor)
+                         "pretrain", best, args.out, processor, accum=args.grad_accum)
 
     # Stage B — real + synthetic mix via a weighted sampler that hits real_frac on average.
     combined = real_train + items["synthetic"]
@@ -312,7 +328,7 @@ def main():
         loader = make_loader(combined, args.size, args.batch, train=True, weights=weights)
         best = run_stage(model, loader, val_loader, device, args.epochs_finetune,
                          args.lr_enc, args.lr_head, args.fg_weight, args.freeze_epochs,
-                         "finetune", best, args.out, processor)
+                         "finetune", best, args.out, processor, accum=args.grad_accum)
 
     # Always persist a final checkpoint (in case val never improved on a smoke run).
     if best < 0:
@@ -320,6 +336,8 @@ def main():
     with open(os.path.join(args.out, "training_meta.json"), "w") as f:
         json.dump({
             "encoder": args.encoder, "size": args.size, "seed": args.seed,
+            "batch": args.batch, "grad_accum": args.grad_accum,
+            "grad_checkpoint": not args.no_grad_checkpoint,
             "epochs_pretrain": args.epochs_pretrain, "epochs_finetune": args.epochs_finetune,
             "fg_weight": args.fg_weight, "real_frac": args.real_frac,
             "n_synthetic": len(items["synthetic"]), "n_real": len(items["real"]),

@@ -110,7 +110,14 @@ Notes:
   (returns "not found" with a message) and the app hides the seg options.
 - `train_tattooseg.py` uses a curriculum (synthetic warm-up → real+synthetic fine-tune); tune
   `--encoder nvidia/mit-b1` (lighter, if it overfits), `--epochs-pretrain` / `--epochs-finetune`,
-  `--fg-weight`, `--real-frac`. Trains at 512 px in bf16 (fits 16 GB).
+  `--fg-weight`, `--real-frac`. Trains at 512 px in bf16.
+- **GPU memory.** Defaults (batch 4 + `--grad-accum 2` = effective batch 8, gradient checkpointing
+  on) peak at **~2.6 GiB** — safe on a busy/shared 16 GB card. If you still OOM, drop `--batch 2`
+  (raise `--grad-accum 4` to keep the effective batch) or `--size 384`; if you have the card to
+  yourself, `--batch 8 --grad-accum 1 --no-grad-checkpoint` is faster. `eval_seg.py --downstream`
+  loads several models at once (SAM + detectors + inpainter + seg) — run it without `--downstream`,
+  or on a freer GPU, if it OOMs. The script sets `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`
+  to limit fragmentation.
 - **Data provenance — you do *not* need to re-run the legacy notebooks.** `gen_synthetic_seg.py`
   reads `data/silhouette/{tattooless,tattoo_clipart}` (hand-curated raw assets — `Deink_01` only
   resized them from `data/silhouette/rawdata/`, no model) and `data/silhouette/mask-predict/`
