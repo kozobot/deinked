@@ -117,10 +117,17 @@ class TattooSegDataset(Dataset):
         return len(self.items)
 
     def _crop(self, img: Image.Image, label: np.ndarray):
-        """Foreground-biased square crop then resize to ``size`` (train) / center-ish (eval)."""
+        """Train: foreground-biased square crop → ``size``. Eval: resize the *whole* image to
+        ``size`` (no crop) so it matches inference (SegformerImageProcessor resizes the full
+        frame) and no tattoo is ever cropped out of the val score — the latter was a real source
+        of val noise, since a center-square crop discards the edges of portrait photos."""
+        if not self.train:
+            img = img.resize((self.size, self.size), Image.BILINEAR)
+            lab = Image.fromarray(label).resize((self.size, self.size), Image.NEAREST)
+            return img, np.array(lab)
         W, H = img.size
         fg = np.argwhere(label == 1)
-        if self.train and len(fg) and random.random() < 0.7:
+        if len(fg) and random.random() < 0.7:
             cy, cx = fg[random.randrange(len(fg))]
             s = int(min(H, W) * random.uniform(0.4, 1.0))
         else:
@@ -206,7 +213,7 @@ def set_encoder_requires_grad(model, flag):
 
 
 def run_stage(model, loader, val_loader, device, epochs, lr_enc, lr_head, fg_weight,
-              freeze_epochs, tag, best_dice, out_dir, processor, accum=1):
+              freeze_epochs, tag, best_dice, out_dir, processor, accum=1, patience=None):
     enc_params = list(model.segformer.parameters())
     head_params = list(model.decode_head.parameters())
     opt = torch.optim.AdamW(
@@ -218,6 +225,7 @@ def run_stage(model, loader, val_loader, device, epochs, lr_enc, lr_head, fg_wei
     sched = torch.optim.lr_scheduler.OneCycleLR(
         opt, max_lr=[lr_enc, lr_head], total_steps=steps, pct_start=0.1)
 
+    since_improve = 0
     for ep in range(epochs):
         set_encoder_requires_grad(model, ep >= freeze_epochs)
         model.train()
@@ -244,7 +252,16 @@ def run_stage(model, loader, val_loader, device, epochs, lr_enc, lr_head, fg_wei
                 best_dice = dice
                 _save(model, processor, out_dir)
                 line += "  *saved"
+                since_improve = 0
+            else:
+                since_improve += 1
         print(line, flush=True)
+        # Early stop once val Dice has plateaued — training loss keeps falling well past the
+        # point where the model overfits (val Dice collapsed ~epoch 8→25 in an earlier run), so
+        # patience both saves time and avoids selecting a lucky late epoch.
+        if patience and since_improve >= patience:
+            print(f"[{tag}] early stop: no val improvement in {patience} epochs", flush=True)
+            break
     return best_dice
 
 
@@ -271,6 +288,10 @@ def main():
     ap.add_argument("--lr-head", type=float, default=6e-4)
     ap.add_argument("--fg-weight", type=float, default=3.0)
     ap.add_argument("--real-frac", type=float, default=0.6, help="target real fraction in Stage B")
+    ap.add_argument("--val-frac", type=float, default=0.2,
+                    help="fraction of real data held out for validation / model selection")
+    ap.add_argument("--patience", type=int, default=6,
+                    help="stop the fine-tune stage after this many epochs without val improvement")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--smoke", action="store_true", help="2 epochs on a tiny subset")
     args = ap.parse_args()
@@ -291,12 +312,15 @@ def main():
         args.freeze_epochs = 0
         args.batch = min(args.batch, 4)
 
-    # Held-out val: 10% of real (falls back to synthetic if no real data).
+    # Held-out val for model selection: a fixed fraction of real (falls back to synthetic if no
+    # real data). A larger, stable val set makes the "best" checkpoint less of a lucky epoch —
+    # the earlier 10% (~6 images) split was noisy enough to swing val Dice 0.88 -> 0.07.
     pool = items["real"] or items["synthetic"]
     random.shuffle(pool)
-    n_val = max(1, len(pool) // 10)
+    n_val = max(2, int(len(pool) * args.val_frac))
     val_items, real_train = pool[:n_val], (items["real"][n_val:] if items["real"] else [])
     val_loader = make_loader(val_items, args.size, args.batch, train=False)
+    print(f"val: {len(val_items)} held-out real images")
 
     from transformers import SegformerForSemanticSegmentation, SegformerImageProcessor
     id2label = {0: "background", 1: "tattoo"}
@@ -328,7 +352,8 @@ def main():
         loader = make_loader(combined, args.size, args.batch, train=True, weights=weights)
         best = run_stage(model, loader, val_loader, device, args.epochs_finetune,
                          args.lr_enc, args.lr_head, args.fg_weight, args.freeze_epochs,
-                         "finetune", best, args.out, processor, accum=args.grad_accum)
+                         "finetune", best, args.out, processor, accum=args.grad_accum,
+                         patience=args.patience)
 
     # Always persist a final checkpoint (in case val never improved on a smoke run).
     if best < 0:
@@ -340,6 +365,7 @@ def main():
             "grad_checkpoint": not args.no_grad_checkpoint,
             "epochs_pretrain": args.epochs_pretrain, "epochs_finetune": args.epochs_finetune,
             "fg_weight": args.fg_weight, "real_frac": args.real_frac,
+            "val_frac": args.val_frac, "patience": args.patience, "n_val": len(val_items),
             "n_synthetic": len(items["synthetic"]), "n_real": len(items["real"]),
             "best_val_dice": best, "smoke": args.smoke,
         }, f, indent=2)

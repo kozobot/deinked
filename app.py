@@ -37,9 +37,11 @@ def _():
     def get_inpainter():
         return Inpainter()
 
-    # Offer the custom-seg localization paths only when a fine-tuned checkpoint exists.
+    # Offer the custom-seg localization paths only when a fine-tuned checkpoint exists, and
+    # default to "seg" when it does — it beats the box+SAM baseline on recall *and* precision.
     seg_available = TattooMaskSegmenter.available()
-    localizer_choices = ["box", "seg", "seg+box"] if seg_available else ["box"]
+    localizer_choices = ["seg", "box", "seg+box"] if seg_available else ["box"]
+    localizer_default = "seg" if seg_available else "box"
 
     def to_png(img: "Image.Image") -> bytes:
         buf = io.BytesIO()
@@ -53,6 +55,7 @@ def _():
         get_segmenter,
         io,
         localizer_choices,
+        localizer_default,
         mo,
         remove_tattoo,
         seg_available,
@@ -75,7 +78,7 @@ def _(mo):
 
 
 @app.cell
-def _(localizer_choices, mo, seg_available):
+def _(localizer_choices, localizer_default, mo, seg_available):
     upload = mo.ui.file(kind="button", label="Upload image", filetypes=[".png", ".jpg", ".jpeg"])
     mask_upload = mo.ui.file(
         kind="button", label="Optional mask (white = remove)", filetypes=[".png", ".jpg", ".jpeg"]
@@ -83,7 +86,7 @@ def _(localizer_choices, mo, seg_available):
     backend = mo.ui.dropdown(["lama", "sdxl"], value="lama", label="Inpaint backend")
     localizer = mo.ui.dropdown(
         localizer_choices,
-        value="box",
+        value=localizer_default,
         label="Localizer" + ("" if seg_available else " (train seg model to enable seg)"),
     )
     detector = mo.ui.dropdown(["gdino", "owlv2", "ensemble"], value="gdino", label="Detector")
