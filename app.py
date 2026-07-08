@@ -84,7 +84,11 @@ def _(localizer_choices, localizer_default, mo, seg_available):
     mask_upload = mo.ui.file(
         kind="button", label="Optional mask (white = remove)", filetypes=[".png", ".jpg", ".jpeg"]
     )
-    backend = mo.ui.dropdown(["lama", "sdxl", "auto"], value="lama", label="Inpaint backend")
+    # Default to "auto": crop-to-region validation showed LaMa is cleanest/fastest on small
+    # plain-skin tattoos while SDXL is needed to reconstruct structure across large ones, so
+    # per-component routing (small -> LaMa, large -> SDXL) gives the best visual result across
+    # image types. See the crop-to-region findings.
+    backend = mo.ui.dropdown(["lama", "sdxl", "auto"], value="auto", label="Inpaint backend")
     localizer = mo.ui.dropdown(
         localizer_choices,
         value=localizer_default,
