@@ -48,6 +48,52 @@ def refine_mask(mask: np.ndarray, dilate: int = 8, feather: int = 5) -> np.ndarr
     return m.astype(np.float32) / 255.0
 
 
+def _inpaint_region(
+    inpainter: Inpainter,
+    image: Image.Image,
+    raw: np.ndarray,
+    backend: str,
+    dilate: int,
+    feather: int,
+    **inpaint_kwargs,
+) -> Image.Image:
+    """Refine ``raw`` (bool mask) and inpaint just those pixels with ``backend``.
+
+    Pixels outside the (refined) mask are left bit-identical to ``image``: LaMa gets a hard
+    binary mask and the result is feathered back on; SDXL blends with the soft mask directly.
+    """
+    refined = refine_mask(raw, dilate=dilate, feather=feather)
+    refined_img = mask_to_pil(refined)
+    if backend == "lama":
+        hard = mask_to_pil((refined > 0.5).astype(bool))
+        result = inpainter.inpaint(image, hard, backend="lama", **inpaint_kwargs)
+        return Image.composite(result, image, refined_img)
+    return inpainter.inpaint(image, refined_img, backend=backend, **inpaint_kwargs)
+
+
+def _split_by_component_size(
+    raw: np.ndarray, image_area: int, auto_area_frac: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """Partition a bool mask into (small, large) sub-masks by connected-component area.
+
+    Each connected blob whose area is >= ``auto_area_frac`` of the image lands in ``large``
+    (route to SDXL — it can reconstruct structure across a limb-sized hole), the rest in
+    ``small`` (route to LaMa — fast, strong plain-skin texture fill). Routing per component,
+    not per image, means a photo with both a wrist tattoo and a full sleeve gets the right
+    model for each region.
+    """
+    n_labels, labels = cv2.connectedComponents(raw.astype(np.uint8))
+    small = np.zeros_like(raw, dtype=bool)
+    large = np.zeros_like(raw, dtype=bool)
+    for label in range(1, n_labels):  # 0 is background
+        comp = labels == label
+        if comp.sum() >= auto_area_frac * image_area:
+            large |= comp
+        else:
+            small |= comp
+    return small, large
+
+
 def remove_tattoo(
     image,
     backend: str = "lama",
@@ -68,6 +114,7 @@ def remove_tattoo(
     detector: str | None = None,
     localizer: str = "box",
     seg_threshold: float | None = None,
+    auto_area_frac: float = 0.02,
     **inpaint_kwargs,
 ) -> RemovalResult:
     """Remove tattoos from ``image``.
@@ -96,6 +143,14 @@ def remove_tattoo(
     default), ``"owlv2"`` (OWLv2 — catches small/faint tattoos GroundingDINO misses; note it
     has no ``text_threshold``), or ``"ensemble"`` (union of both, NMS-merged, max recall, ~2x
     detection time). ``None`` uses the segmenter's own default.
+
+    ``backend`` selects the inpaint fill: ``"lama"`` (fast feed-forward texture fill),
+    ``"sdxl"`` (diffusion, reconstructs structure across large holes), or ``"auto"`` — route
+    per connected mask component by size, sending small blobs to LaMa and large/limb-spanning
+    blobs to SDXL, so an image with both a wrist tattoo and a full sleeve gets the right model
+    for each. ``auto_area_frac`` (fraction of the image area) is the small/large cutoff for
+    ``"auto"``: a component covering >= this fraction goes to SDXL. Extra ``**inpaint_kwargs``
+    (prompt, strength, ...) flow to the SDXL pass.
     """
     image = ensure_pil(image)
     localizer = (localizer or "box").lower()
@@ -139,19 +194,28 @@ def remove_tattoo(
             image=image, mask=raw_mask_img, raw_mask=raw_mask_img, found=False
         )
 
-    # 2. Refine the mask (dilate + feather).
+    # 2. Refine the mask (dilate + feather). This drives the returned `.mask` and the
+    #    feathered composite; the per-backend passes below re-refine their own sub-masks.
     refined = refine_mask(raw, dilate=dilate, feather=feather)
     refined_img = mask_to_pil(refined)
 
-    # 3. Inpaint. LaMa wants a hard binary mask; SDXL blends with the soft one.
+    # 3. Inpaint. "auto" routes each connected mask component to the backend that fits its
+    #    size (small -> LaMa, large -> SDXL); "lama"/"sdxl" fill the whole mask with one.
     inpainter = inpainter or Inpainter()
-    if backend == "lama":
-        hard = mask_to_pil((refined > 0.5).astype(bool))
-        result = inpainter.inpaint(image, hard, backend="lama", **inpaint_kwargs)
-        # Feathered composite so the patched region blends into the original.
-        result = Image.composite(result, image, refined_img)
+    if backend == "auto":
+        image_area = image.size[0] * image.size[1]
+        small, large = _split_by_component_size(raw, image_area, auto_area_frac)
+        result = image
+        if small.any():
+            result = _inpaint_region(inpainter, result, small, "lama", dilate, feather)
+        if large.any():
+            result = _inpaint_region(
+                inpainter, result, large, "sdxl", dilate, feather, **inpaint_kwargs
+            )
     else:
-        result = inpainter.inpaint(image, refined_img, backend=backend, **inpaint_kwargs)
+        result = _inpaint_region(
+            inpainter, image, raw, backend, dilate, feather, **inpaint_kwargs
+        )
 
     return RemovalResult(
         image=result, mask=refined_img, raw_mask=raw_mask_img, found=True

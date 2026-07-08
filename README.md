@@ -56,6 +56,9 @@ img = Image.open("photo.jpg")
 result = remove_tattoo(img, backend="lama")   # or backend="sdxl"
 result.image.save("clean.jpg")
 
+# backend="auto" routes each mask region by size: small blobs → LaMa, large → SDXL
+result = remove_tattoo(img, backend="auto")
+
 # Use the custom pixel-level tattoo segmenter instead of box-detection + SAM (see below):
 result = remove_tattoo(img, localizer="seg")      # SegFormer only
 result = remove_tattoo(img, localizer="seg+box")  # union of seg + box path (max recall)
@@ -152,6 +155,7 @@ Notes:
 |---------|-------|----------|
 | `lama`  | fast (~seconds) | most tattoos on skin; strong default |
 | `sdxl`  | slower (diffusion) | large/complex regions needing semantic fill |
+| `auto`  | per-region | mixed images — routes small blobs → LaMa, large/limb-spanning → SDXL |
 
 ## Roadmap / follow-ups
 
@@ -244,16 +248,19 @@ limb-sized hole it collapses to a smear; diffusion can reconstruct structure but
 hole is large relative to its working resolution. The suggestions below are ordered by
 value-to-effort for exactly this large-region case.
 
-- **Backend auto-selection (highest value, cheap).** Route per mask instead of a global toggle:
-  small masks → LaMa (fast, plain skin), large or limb-spanning masks → SDXL. Confirmed
-  necessary on `retouchme-86` (full-sleeve tattoos): **LaMa dissolves the whole forearm into the
-  background** on a limb-sized hole because it has no semantics, whereas **SDXL reconstructs a
-  coherent arm/garment** (~11 s). Detection there was already correct (98% recall) — this is
-  purely a fill-quality problem, so size-based routing fixes it without new dependencies. **Route
-  per connected mask component, not per image:** label the mask (`cv2.connectedComponents` / SAM
-  already returns per-box masks), send each small blob to LaMa and each large blob to SDXL, so an
-  image with both a wrist tattoo and a sleeve gets the right model for each instead of one global
-  choice.
+- **Backend auto-selection (highest value, cheap).** ✅ *Implemented.* `remove_tattoo(...,
+  backend="auto")` routes per mask instead of a global toggle: small masks → LaMa (fast, plain
+  skin), large or limb-spanning masks → SDXL. Confirmed necessary on `retouchme-86` (full-sleeve
+  tattoos): **LaMa dissolves the whole forearm into the background** on a limb-sized hole because
+  it has no semantics, whereas **SDXL reconstructs a coherent arm/garment** (~11 s). Detection
+  there was already correct (98% recall) — this is purely a fill-quality problem, so size-based
+  routing fixes it without new dependencies. **Routing is per connected mask component, not per
+  image:** the refined mask is labelled with `cv2.connectedComponents`, each blob covering ≥
+  `auto_area_frac` of the image (default 0.02) goes to SDXL and the rest to LaMa, so an image with
+  both a wrist tattoo and a sleeve gets the right model for each instead of one global choice.
+  Wired through `remove_tattoo` (`backend="auto"`, `auto_area_frac=`), the app's **Inpaint
+  backend** dropdown, and `scripts/smoke_test.py` (`--backend auto` / `--auto-area-frac`). See
+  `_split_by_component_size` in `deink/pipeline.py`.
 - **Crop-to-region at native model resolution (biggest lever for large tattoos).** The single most
   effective fix short of a new model. Today SDXL runs the *whole image* at 1024 px, so a sleeve is
   reconstructed from relatively few pixels and blurs. Instead, crop a tight bbox around each mask
