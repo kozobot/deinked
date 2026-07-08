@@ -70,7 +70,8 @@ def _(mo):
         """
         # 🖋️ deinked — tattoo remover
         Upload a photo. The tool locates the tattoo (GroundingDINO + SAM) and paints it
-        out (LaMa or SDXL). If auto-detect misses, upload a black/white mask instead
+        out (LaMa, SDXL, or `auto` — route each region by size: small blobs to LaMa, large
+        sleeves to SDXL). If auto-detect misses, upload a black/white mask instead
         (white = area to remove).
         """
     )
@@ -83,7 +84,7 @@ def _(localizer_choices, localizer_default, mo, seg_available):
     mask_upload = mo.ui.file(
         kind="button", label="Optional mask (white = remove)", filetypes=[".png", ".jpg", ".jpeg"]
     )
-    backend = mo.ui.dropdown(["lama", "sdxl"], value="lama", label="Inpaint backend")
+    backend = mo.ui.dropdown(["lama", "sdxl", "auto"], value="lama", label="Inpaint backend")
     localizer = mo.ui.dropdown(
         localizer_choices,
         value=localizer_default,

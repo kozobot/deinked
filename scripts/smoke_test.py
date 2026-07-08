@@ -39,7 +39,11 @@ def find_sample() -> str | None:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("image", nargs="?", default=None)
-    ap.add_argument("--backend", default="lama", choices=["lama", "sdxl"])
+    ap.add_argument("--backend", default="lama", choices=["lama", "sdxl", "auto"],
+                    help="inpaint fill: lama, sdxl, or auto (small mask blobs -> lama, "
+                         "large/limb-spanning -> sdxl)")
+    ap.add_argument("--auto-area-frac", type=float, default=0.02,
+                    help="backend=auto: components >= this fraction of the image go to sdxl")
     ap.add_argument("--prompt", default="a tattoo.")
     ap.add_argument("--box-threshold", type=float, default=0.25, help="detector box confidence")
     ap.add_argument("--text-threshold", type=float, default=0.2, help="detector text confidence")
@@ -74,6 +78,7 @@ def main():
         text_threshold=args.text_threshold,
         max_area_frac=args.max_area_frac,
         tile=args.tile,
+        auto_area_frac=args.auto_area_frac,
     )
     dt = time.time() - t0
     print(f"found tattoo: {res.found}   elapsed: {dt:.1f}s")
