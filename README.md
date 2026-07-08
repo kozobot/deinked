@@ -261,18 +261,33 @@ value-to-effort for exactly this large-region case.
   Wired through `remove_tattoo` (`backend="auto"`, `auto_area_frac=`), the app's **Inpaint
   backend** dropdown, and `scripts/smoke_test.py` (`--backend auto` / `--auto-area-frac`). See
   `_split_by_component_size` in `deink/pipeline.py`.
-- **Crop-to-region at native model resolution (biggest lever for large tattoos).** The single most
-  effective fix short of a new model. Today SDXL runs the *whole image* at 1024 px, so a sleeve is
-  reconstructed from relatively few pixels and blurs. Instead, crop a tight bbox around each mask
-  component **+ a skin margin** (e.g. 25–50%), inpaint that crop at the model's native resolution
-  (1024 px of *just the arm*), and composite back. This multiplies the effective resolution on the
-  inked area and is where most sleeve blur comes from. LaMa benefits too — it was trained at a
-  limited resolution, so feeding it a downscaled full frame smears big holes; crop-and-fill (or
-  downscale → inpaint → upscale the fill) keeps it near its training scale.
-- **Progressive / "onion-peel" filling for big holes.** For any feed-forward model, iteratively
-  shrink the hole from its boundary inward (fill a ring, add it to the known pixels, repeat) so
-  structure and texture propagate instead of the center collapsing to an average. Cheap to
-  implement on top of LaMa and directly attacks the center-of-a-sleeve smear.
+- **Crop-to-region at native model resolution (biggest lever for large tattoos).** ✅
+  *Implemented (default on).* Each inpaint pass runs on a padded window cropped around the mask at
+  the backend's native resolution instead of downscaling the whole frame. `_region_bbox` pads the
+  mask bbox by `crop_pad` (default 0.5 → ~2× context) and grows it to a centered square (SDXL runs
+  square — avoids aspect distortion) with a `min_size` floor of the native res (1024 for SDXL), so
+  a small tattoo on a large photo gets a **1024²-of-real-pixels** window instead of being squashed
+  into 1024 px before SDXL ever sees it (a sleeve likewise keeps its detail). `_inpaint_region`
+  crops → fills → pastes back into a copy, leaving pixels outside the mask bit-identical. Knobs
+  `crop=` / `crop_pad=` on `remove_tattoo` (set `crop=False` to restore the old full-frame path);
+  applies to `"lama"`, `"sdxl"`, and both legs of `"auto"`. Validated on `vic_lari` and the
+  laser-removal set: **cropped SDXL is ~40 % faster than full-frame** (~10 s vs ~17 s) at equal-or-
+  better quality, and it cleanly erases the 130–150 px-deep holes (cherry-blossom sleeve, tribal
+  dragon) that motivated this item. See `_region_bbox` / `_NATIVE_RES` in `deink/pipeline.py`.
+- **Progressive / "onion-peel" filling for big holes.** ❌ *Won't do — built it, benchmarked it,
+  it doesn't help.* Two findings killed it. (a) The literal outer-ring-inward peel is **wrong for a
+  removal task**: leaving the inner hole unmasked treats the still-present ink as valid surrounding
+  context, so the early passes *drag the ink inward* into a smeared blob — worse than a single
+  pass. (A corrected variant — mask the *entire* not-yet-committed hole each pass so ink is never
+  context, commit only the current outer ring, then re-fill the interior against the freshly
+  committed skin — removes the dragging.) (b) Even corrected, onion-peel **never beat single-pass**
+  on the three deepest holes in the test set (130–150 px), for either backend: SDXL onion
+  *hallucinates spurious specks / a ghost of the original* (clearly worse), and LaMa onion only
+  marginally softens its smear on a backend that loses to SDXL anyway — which `backend="auto"`
+  already routes large holes to. Root cause: **crop-to-region (above) already gives the fill model
+  a clean native-resolution view**, so the "center of a big hole collapses to an average" premise
+  this item targeted no longer occurs. At ~`onion_layers`× the inpaint calls for no gain, not worth
+  shipping.
 - **Two-stage structure → texture.** Let one pass rough in low-frequency structure (LaMa, or a
   large-hole specialist) and a second diffusion pass (SDXL/FLUX with `strength` ~0.4–0.6 over the
   first result) add skin texture. Keeps limbs anatomically coherent while avoiding the plastic look
