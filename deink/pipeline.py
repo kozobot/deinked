@@ -48,6 +48,69 @@ def refine_mask(mask: np.ndarray, dilate: int = 8, feather: int = 5) -> np.ndarr
     return m.astype(np.float32) / 255.0
 
 
+# Native working resolution per backend, used as a floor for the crop-to-region window so a
+# small tattoo is fed a crop of *real* pixels around it rather than an upscaled thumbnail.
+# SDXL always runs at 1024 internally; LaMa is fully convolutional (no fixed size), so 0.
+_NATIVE_RES = {"sdxl": 1024, "lama": 0}
+
+
+def _region_bbox(
+    mask: np.ndarray, image_size: tuple[int, int], pad_frac: float = 0.5, min_size: int = 0
+) -> tuple[int, int, int, int] | None:
+    """Bounding box (l, t, r, b) around the set pixels of ``mask``, padded and clamped.
+
+    ``pad_frac`` grows each side by that fraction of the mask extent (0.5 → ~2x context) so
+    the inpainter sees surrounding skin to blend into. When feasible the box is grown to a
+    centered square of side ``max(rect, min_size)`` — SDXL runs square, so a square crop
+    avoids the aspect distortion of squashing a tall region into 1024x1024, and ``min_size``
+    lets a tiny tattoo pull in a native-resolution window. The box always fully contains the
+    (padded) mask rect and never exceeds the image; if a square can't cover the rect within
+    the image (mask wider than the short image side) the padded rect is kept as-is. Returns
+    ``None`` for an empty mask.
+
+    ``image_size`` is a PIL ``(W, H)`` size.
+    """
+    W, H = image_size
+    ys, xs = np.where(np.asarray(mask) > 0)
+    if xs.size == 0:
+        return None
+    l, r = int(xs.min()), int(xs.max()) + 1
+    t, b = int(ys.min()), int(ys.max()) + 1
+    pad_x = int(round((r - l) * pad_frac))
+    pad_y = int(round((b - t) * pad_frac))
+    l = max(0, l - pad_x)
+    t = max(0, t - pad_y)
+    r = min(W, r + pad_x)
+    b = min(H, b + pad_y)
+    side = min(max(r - l, b - t, min_size), W, H)
+    if side >= (r - l) and side >= (b - t):
+        cx, cy = (l + r) / 2, (t + b) / 2
+        l = int(round(cx - side / 2))
+        t = int(round(cy - side / 2))
+        l = max(0, min(l, W - side))
+        t = max(0, min(t, H - side))
+        r, b = l + side, t + side
+    return int(l), int(t), int(r), int(b)
+
+
+def _fill(
+    inpainter: Inpainter,
+    image: Image.Image,
+    refined: np.ndarray,
+    backend: str,
+    **inpaint_kwargs,
+) -> Image.Image:
+    """Inpaint ``image`` where ``refined`` (float mask over ``image``) is set, compositing so
+    pixels outside the mask stay bit-identical: LaMa gets a hard binary mask and is feathered
+    back on; SDXL blends with the soft mask directly (and composites internally)."""
+    refined_img = mask_to_pil(refined)
+    if backend == "lama":
+        hard = mask_to_pil((refined > 0.5).astype(bool))
+        result = inpainter.inpaint(image, hard, backend="lama", **inpaint_kwargs)
+        return Image.composite(result, image, refined_img)
+    return inpainter.inpaint(image, refined_img, backend=backend, **inpaint_kwargs)
+
+
 def _inpaint_region(
     inpainter: Inpainter,
     image: Image.Image,
@@ -55,20 +118,31 @@ def _inpaint_region(
     backend: str,
     dilate: int,
     feather: int,
+    crop: bool = True,
+    crop_pad: float = 0.5,
     **inpaint_kwargs,
 ) -> Image.Image:
     """Refine ``raw`` (bool mask) and inpaint just those pixels with ``backend``.
 
-    Pixels outside the (refined) mask are left bit-identical to ``image``: LaMa gets a hard
-    binary mask and the result is feathered back on; SDXL blends with the soft mask directly.
+    With ``crop`` (default), the work is done on a padded window around the mask at the
+    backend's native resolution instead of the whole frame — a small tattoo on a large photo
+    is no longer squashed into 1024px before SDXL sees it, sharply lifting fill quality. The
+    filled window is pasted back into a copy of ``image``; because ``_fill`` composites the
+    crop against itself, pixels outside the mask are unchanged, so the full frame stays
+    bit-identical outside the mask.
     """
     refined = refine_mask(raw, dilate=dilate, feather=feather)
-    refined_img = mask_to_pil(refined)
-    if backend == "lama":
-        hard = mask_to_pil((refined > 0.5).astype(bool))
-        result = inpainter.inpaint(image, hard, backend="lama", **inpaint_kwargs)
-        return Image.composite(result, image, refined_img)
-    return inpainter.inpaint(image, refined_img, backend=backend, **inpaint_kwargs)
+    if crop:
+        box = _region_bbox(
+            refined, image.size, pad_frac=crop_pad, min_size=_NATIVE_RES.get(backend, 0)
+        )
+        if box is not None and box != (0, 0, image.size[0], image.size[1]):
+            l, t, r, b = box
+            filled = _fill(inpainter, image.crop(box), refined[t:b, l:r], backend, **inpaint_kwargs)
+            out = image.copy()
+            out.paste(filled, box)
+            return out
+    return _fill(inpainter, image, refined, backend, **inpaint_kwargs)
 
 
 def _split_by_component_size(
@@ -115,6 +189,8 @@ def remove_tattoo(
     localizer: str = "box",
     seg_threshold: float | None = None,
     auto_area_frac: float = 0.02,
+    crop: bool = True,
+    crop_pad: float = 0.5,
     **inpaint_kwargs,
 ) -> RemovalResult:
     """Remove tattoos from ``image``.
@@ -151,6 +227,13 @@ def remove_tattoo(
     for each. ``auto_area_frac`` (fraction of the image area) is the small/large cutoff for
     ``"auto"``: a component covering >= this fraction goes to SDXL. Extra ``**inpaint_kwargs``
     (prompt, strength, ...) flow to the SDXL pass.
+
+    ``crop`` (default True) runs each inpaint pass on a padded window cropped around the mask
+    at the backend's native resolution, rather than downscaling the whole frame — a small
+    tattoo on a large photo keeps its detail instead of being squashed into 1024px before
+    SDXL sees it. ``crop_pad`` sets how much surrounding skin the window includes (fraction of
+    the mask extent per side; 0.5 → ~2x context). Set ``crop=False`` to inpaint the full frame
+    (the previous behaviour). The result outside the mask stays bit-identical either way.
     """
     image = ensure_pil(image)
     localizer = (localizer or "box").lower()
@@ -207,14 +290,18 @@ def remove_tattoo(
         small, large = _split_by_component_size(raw, image_area, auto_area_frac)
         result = image
         if small.any():
-            result = _inpaint_region(inpainter, result, small, "lama", dilate, feather)
+            result = _inpaint_region(
+                inpainter, result, small, "lama", dilate, feather, crop=crop, crop_pad=crop_pad
+            )
         if large.any():
             result = _inpaint_region(
-                inpainter, result, large, "sdxl", dilate, feather, **inpaint_kwargs
+                inpainter, result, large, "sdxl", dilate, feather,
+                crop=crop, crop_pad=crop_pad, **inpaint_kwargs,
             )
     else:
         result = _inpaint_region(
-            inpainter, image, raw, backend, dilate, feather, **inpaint_kwargs
+            inpainter, image, raw, backend, dilate, feather,
+            crop=crop, crop_pad=crop_pad, **inpaint_kwargs,
         )
 
     return RemovalResult(

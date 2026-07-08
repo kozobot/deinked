@@ -88,6 +88,17 @@ below. Both produce a `bool (H,W)` mask that flows into the same refine→inpain
   feather=5, ...) -> RemovalResult`. Pass a `mask` to skip detection (interactive path).
   `refine_mask` dilates (cover ink edges) and feathers (seamless blend). Returns `.image`,
   `.mask`, `.raw_mask`, `.found`. Pixels outside the mask are left bit-identical to the input.
+  - **Crop-to-region (`crop=` / `crop_pad=` knobs, default on):** each inpaint pass runs on a
+    padded window cropped around the mask at the backend's *native* resolution (`_region_bbox`
+    + `_NATIVE_RES`) instead of downscaling the whole frame. Previously a small tattoo on a
+    large photo was squashed into SDXL's 1024px before it was ever seen; now SDXL gets a
+    1024²-of-real-pixels window centered on the ink (LaMa gets a tight, focused crop). The box
+    is padded by `crop_pad` (fraction of mask extent per side, 0.5 → ~2x context), grown to a
+    centered square when feasible (SDXL runs square — avoids aspect distortion) with a
+    `min_size` floor of the native res, and always fully contains the mask and stays in-bounds.
+    `_inpaint_region` crops → `_fill` (the shared backend+composite seam) → pastes back into a
+    copy, so the frame stays bit-identical outside the mask. `crop=False` restores the old
+    full-frame behaviour. Applies to `"lama"`, `"sdxl"`, and both legs of `"auto"`.
 - **`deink/utils.py`** — `get_device`, `ensure_pil`, `mask_to_pil`, `empty_mask`.
 
 Heavy model objects live on `TattooSegmenter` / `Inpainter` instances — construct once and
