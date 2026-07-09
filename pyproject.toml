@@ -1,16 +1,12 @@
-[build-system]
-requires = ["setuptools>=61"]
-build-backend = "setuptools.build_meta"
-
 [project]
-name = "deinked"
-version = "0.2.0"
-description = "Segment-and-inpaint tattoo removal from images"
+name = "deinked-comfyui"
+description = "Tattoo removal for ComfyUI: SegFormer localization + LaMa/SDXL inpainting with crop-to-native and bit-identical composite."
+version = "0.1.0"
+license = { file = "LICENSE" }
 requires-python = ">=3.11"
-# Runtime deps are installed via environment.yml (conda). Listed here for reference.
+# torch/torchvision are provided by the ComfyUI host (must be a CUDA build with sm_120/cu128
+# kernels for Blackwell GPUs — see README). We do not pin them here.
 dependencies = [
-    "torch",
-    "torchvision",
     "transformers>=5",
     "diffusers>=0.30",
     "accelerate",
@@ -20,9 +16,13 @@ dependencies = [
     "numpy",
 ]
 
-[project.optional-dependencies]
-app = ["marimo"]
-dev = ["pytest"]
+[project.urls]
+Repository = "https://github.com/kozobot/deinked"
 
-[tool.setuptools]
-packages = ["deink"]
+[tool.comfy]
+PublisherId = "kozobot"
+DisplayName = "deinked — Tattoo Removal"
+Icon = ""
+# The box-localization path expects storyicon's comfyui_segment_anything (GroundingDinoSAMSegment)
+# to be installed; it is interoperated via the standard MASK type, not imported. Install it via
+# ComfyUI Manager. The SegFormer + inpaint path works without it.

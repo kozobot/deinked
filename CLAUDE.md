@@ -7,22 +7,42 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `deinked` removes tattoos from images (video is a future goal). It **used to** train a
 bespoke fastai GAN (a NoGAN port of [SkinDeep](https://github.com/vijishmadhavan/SkinDeep));
 that never fully worked and has been retired. It is now a **segment-and-inpaint pipeline**
-built on pretrained foundation models — no training. The code is a small importable Python
+built on pretrained foundation models — no training. The core is a small importable Python
 package (`deink/`) plus a marimo app, driven from a local conda environment.
+
+## Repository layout (root = ComfyUI plugin, `core/` = the project)
+
+The **repo root is a ComfyUI custom-node plugin** (installable directly from the GitHub URL /
+Manager / Registry). The **original project lives under [`core/`](core/)** — the `deink` package,
+the marimo app, the training scripts, and `data/`. The plugin adds `core/` to `sys.path` (in the
+root `__init__.py`) and **imports the canonical `deink` code** — there is no vendored copy.
+
+- Plugin root: `__init__.py` (`NODE_CLASS_MAPPINGS` + the `sys.path`/`DEINK_TATTOOSEG_DIR` shim),
+  `convert.py` (IMAGE/MASK tensor ↔ PIL/numpy), `models.py` (cached model singletons),
+  `nodes/*.py` (the 5 node classes), `pyproject.toml` (`[tool.comfy]`), `example_workflows/`.
+- Nodes: `DeinkSegFormer`, `DeinkRefineMask`, `DeinkSplitMaskBySize`, `DeinkInpaint`,
+  `DeinkRemoveTattoo`. Box localization reuses the commodity `comfyui_segment_anything` node
+  (interop via the `MASK` type, not imported); we own `DeinkInpaint` so crop-to-native +
+  bit-identical composite wrap the backend. `DeinkInpaint` treats its input mask as *final*
+  (refine upstream with `DeinkRefineMask`; it does not re-refine).
+- **Training is out of scope for ComfyUI** and stays as offline scripts in `core/scripts/`; the
+  plugin only *consumes* the SegFormer checkpoint at `core/data/models/tattoo-segformer/`.
 
 ## Running
 
-Local conda env (no Docker), targeting an NVIDIA Blackwell GPU (sm_120, e.g. RTX 5070 Ti):
+Everything below runs from **`core/`** (the project working dir), in a local conda env (no Docker),
+targeting an NVIDIA Blackwell GPU (sm_120, e.g. RTX 5070 Ti):
 
 ```bash
-mamba env create -f environment.yml && conda activate deinked
+cd core && mamba env create -f environment.yml && conda activate deinked
 ```
 
 PyTorch comes from a CUDA wheel that includes `sm_120` kernels. There is no CPU-only path
 worth using — the diffusion/segmentation models assume a GPU.
 
-- App: `marimo run app.py` (or `marimo edit app.py`).
-- Smoke test: `python scripts/smoke_test.py --backend lama` → writes `scratch/smoke_*.png`.
+- App: `marimo run app.py` (or `marimo edit app.py`) from `core/`.
+- Smoke test: `python scripts/smoke_test.py --backend lama` (from `core/`) → writes `scratch/smoke_*.png`.
+- The ComfyUI plugin: clone the repo root into `ComfyUI/custom_nodes/`; see the root `README.md`.
 
 ## Architecture
 
