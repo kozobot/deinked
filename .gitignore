@@ -129,18 +129,18 @@ dmypy.json
 .pyre/
 
 # Training stuff we don't want checked in
-data/rawdata/*.jpeg
+core/data/rawdata/*.jpeg
 *.pkl
 models/
 
 # Large image datasets and model checkpoints — kept on disk, not versioned
-data/deinked/
-data/silhouette/
-data/stock/
-data/models/
+core/data/deinked/
+core/data/silhouette/
+core/data/stock/
+core/data/models/
 
 # Pipeline scratch output (smoke tests, diagnostics)
-scratch/
+core/scratch/
 
 
 # IDE stuff

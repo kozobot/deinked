@@ -1,0 +1,9 @@
+# Plugin runtime deps. torch/torchvision come from the ComfyUI host (needs a CUDA build with
+# sm_120/cu128 kernels for Blackwell GPUs — see README), so they are intentionally not listed.
+transformers>=5
+diffusers>=0.30
+accelerate
+simple-lama-inpainting
+opencv-python
+Pillow
+numpy
