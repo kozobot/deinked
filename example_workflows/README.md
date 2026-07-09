@@ -7,6 +7,15 @@
   detection). Defaults to `backend=auto`, `localizer=seg` like the app — note `auto` sends large
   regions to SDXL, whose model downloads (~6.5 GB) on first use; switch to `lama` for a fast run.
   Install into ComfyUI's `user/default/workflows/` to have it appear in the **Workflows** tab.
+- **`deinked_app_composable.json`** — the same app-mirroring graph as `app_equivalent.json`
+  (`Load Image → … → Save`, with Before / After / Mask previews) but with the all-in-one
+  `Deink Remove Tattoo` node **decomposed** into the discrete pipeline stages
+  `Deink SegFormer → Deink Refine Mask → Deink Inpaint`, so you can inspect the intermediate mask
+  and tune each stage independently (or hand-correct the mask via **Open in MaskEditor** before
+  inpaint). Uses the `seg` localizer with the app's defaults (`backend=auto`, `seg_threshold=0.5`,
+  `dilate=8`, `feather=5`, `crop`, `crop_pad=0.5`), so — like the all-in-one `seg` path — it needs
+  a trained SegFormer checkpoint (else `Deink SegFormer` yields an empty mask and the image passes
+  through). Install into `user/default/workflows/` to see it in the **Workflows** tab.
 - **`segformer_path.json`** — self-contained, no commodity node needed:
   `Load Image → Deink SegFormer → Deink Refine Mask → Deink Inpaint (auto) → Save Image`.
   Requires a trained SegFormer checkpoint at `core/data/models/tattoo-segformer/` (or
