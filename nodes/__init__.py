@@ -1,6 +1,6 @@
 """Node classes for the deink ComfyUI plugin."""
 
-from .backend import DeinkLamaBackend, DeinkSdxlBackend
+from .backend import DeinkLamaBackend, DeinkSdxlBackend, DeinkTwoStageBackend
 from .inpaint import DeinkInpaint
 from .refine_mask import DeinkRefineMask
 from .remove_tattoo import DeinkRemoveTattoo
@@ -15,4 +15,5 @@ __all__ = [
     "DeinkSdxlBackend",
     "DeinkSegFormer",
     "DeinkSplitMaskBySize",
+    "DeinkTwoStageBackend",
 ]

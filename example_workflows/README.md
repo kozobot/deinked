@@ -5,7 +5,8 @@
   app's controls (backend, localizer `seg`/`box`/`seg+box`, detector, tiling, detection
   thresholds, prompt, seg_threshold, dilate/feather, plus an optional `mask` input to bypass
   detection). Defaults to `backend=auto`, `localizer=seg` like the app — note `auto` sends large
-  regions to SDXL, whose model downloads (~6.5 GB) on first use; switch to `lama` for a fast run.
+  regions to the two-stage LaMa+SDXL fill, whose SDXL model downloads (~6.5 GB) on first use;
+  switch to `lama` for a fast run.
   Install into ComfyUI's `user/default/workflows/` to have it appear in the **Workflows** tab.
 - **`deinked_app_composable.json`** — the same app-mirroring graph as `app_equivalent.json`
   (`Load Image → … → Save`, with Before / After / Mask previews) but with the all-in-one
@@ -20,6 +21,21 @@
   `seg` path — it needs a trained SegFormer checkpoint (else `Deink SegFormer` yields an empty mask
   and the image passes through). Install into `user/default/workflows/` to see it in the
   **Workflows** tab.
+- **`two_stage.json`** — the `deinked_app_composable.json` graph with the `Deink SDXL Backend`
+  swapped for a **`Deink Two-Stage Backend`** (`min_area_frac=0.02`, `strength=0.5`): large /
+  limb-spanning mask components get a LaMa structure pass followed by a low-strength SDXL texture
+  pass (coherent limbs without the plastic look of a single high-strength diffusion pass), while
+  small components still route to the `Deink LaMa Backend`. Same SegFormer-`seg` defaults and
+  checkpoint requirement as the composable graph. This matches what the all-in-one
+  `Deink Remove Tattoo` node's `backend=auto` now does under the hood.
+- **`two_stage_segbox.json`** — the highest-recall two-stage path, built on the all-in-one
+  **`Deink Remove Tattoo`** node: `localizer=seg+box` (SegFormer **∪** GroundingDINO+SAM box path,
+  for max detection recall), `backend=auto` (small blobs → LaMa, large/limb-spanning → two-stage),
+  `dilate=15` (covers bold-ink edges, avoids colour bleed). Use this when the plain `seg` localizer
+  misses tattoos (it roughly doubled mask coverage on subjects with many small/discrete pieces).
+  The box path loads GroundingDINO + SAM (~3 GB) on first use, so the first run is slow (~90 s);
+  warm runs add only a few seconds. On near-fully-tattooed subjects the box path helps little
+  (its person-sized box is dropped by `max_area_frac`), so recall there is still SegFormer-bound.
 - **`segformer_path.json`** — self-contained, no commodity node needed:
   `Load Image → Deink SegFormer → Deink Refine Mask → Deink Inpaint → Save Image`, with a
   `Deink LaMa Backend` + `Deink SDXL Backend` pair feeding `Deink Inpaint`'s `backend_*` sockets

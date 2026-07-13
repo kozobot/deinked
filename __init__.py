@@ -31,6 +31,7 @@ from .nodes import (  # noqa: E402  (import after sys.path/env setup)
     DeinkSdxlBackend,
     DeinkSegFormer,
     DeinkSplitMaskBySize,
+    DeinkTwoStageBackend,
 )
 
 NODE_CLASS_MAPPINGS = {
@@ -39,6 +40,7 @@ NODE_CLASS_MAPPINGS = {
     "DeinkSplitMaskBySize": DeinkSplitMaskBySize,
     "DeinkLamaBackend": DeinkLamaBackend,
     "DeinkSdxlBackend": DeinkSdxlBackend,
+    "DeinkTwoStageBackend": DeinkTwoStageBackend,
     "DeinkInpaint": DeinkInpaint,
     "DeinkRemoveTattoo": DeinkRemoveTattoo,
 }
@@ -49,6 +51,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "DeinkSplitMaskBySize": "Deink Split Mask by Size",
     "DeinkLamaBackend": "Deink LaMa Backend",
     "DeinkSdxlBackend": "Deink SDXL Backend",
+    "DeinkTwoStageBackend": "Deink Two-Stage Backend",
     "DeinkInpaint": "Deink Inpaint",
     "DeinkRemoveTattoo": "Deink Remove Tattoo (all-in-one)",
 }

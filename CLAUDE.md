@@ -21,20 +21,24 @@ root `__init__.py`) and **imports the canonical `deink` code** — there is no v
   `convert.py` (IMAGE/MASK tensor ↔ PIL/numpy), `models.py` (cached model singletons),
   `nodes/*.py` (the 7 node classes), `pyproject.toml` (`[tool.comfy]`), `example_workflows/`.
 - Nodes: `DeinkSegFormer`, `DeinkRefineMask`, `DeinkSplitMaskBySize`, `DeinkLamaBackend`,
-  `DeinkSdxlBackend`, `DeinkInpaint`, `DeinkRemoveTattoo`. Box localization reuses the commodity
+  `DeinkSdxlBackend`, `DeinkTwoStageBackend`, `DeinkInpaint`, `DeinkRemoveTattoo`. Box localization
+  reuses the commodity
   `comfyui_segment_anything` node (interop via the `MASK` type, not imported); we own `DeinkInpaint`
   so crop-to-native + bit-identical composite wrap the backend. `DeinkInpaint` treats its input mask
   as *final* (refine upstream with `DeinkRefineMask`; it does not re-refine).
   - **Backend as a wired input (`nodes/backend.py`):** `DeinkInpaint` has **no `backend` combo**.
-    Instead `DeinkLamaBackend` / `DeinkSdxlBackend` are provider nodes that emit a custom
-    `DEINK_BACKEND` descriptor (`{"name", "min_area_frac", "kwargs"}`) into `DeinkInpaint`'s optional
-    `backend_1..3` sockets; SDXL params (prompt/strength/steps/seed/…) live on the SDXL provider.
-    `DeinkInpaint` auto-routes each connected mask component to the wired backend whose
-    `min_area_frac` best matches the component's image-area fraction, via
+    Instead `DeinkLamaBackend` / `DeinkSdxlBackend` / `DeinkTwoStageBackend` are provider nodes that
+    emit a custom `DEINK_BACKEND` descriptor (`{"name", "min_area_frac", "kwargs"}`) into
+    `DeinkInpaint`'s optional `backend_1..3` sockets; SDXL params (prompt/strength/steps/seed/…) live
+    on the SDXL / two-stage providers (the two-stage provider defaults `strength` to 0.5 — its params
+    configure the SDXL texture stage). `DeinkInpaint` auto-routes each connected mask component to the
+    wired backend whose `min_area_frac` best matches the component's image-area fraction, via
     `deink.pipeline._route_by_component_size` (the N-tier generalization of `_split_by_component_size`);
-    with the default pair (lama 0.0, sdxl 0.02) this is bit-identical to the retired `backend="auto"`.
-    No backend wired → a plain LaMa fill (standalone default). `DeinkRemoveTattoo` (all-in-one) is
-    unchanged — it keeps its own `backend` = `lama`/`sdxl`/`auto` string knob.
+    with the default pair (lama 0.0, sdxl 0.02) this reproduces the old plain-SDXL `backend="auto"`
+    (which now itself routes large regions to `twostage`, so wire a `DeinkTwoStageBackend` in place of
+    the SDXL provider to match current `auto`). No backend wired → a plain LaMa fill (standalone
+    default). `DeinkRemoveTattoo` (all-in-one) keeps its own `backend` =
+    `lama`/`sdxl`/`auto`/`twostage` string knob.
 - **Training is out of scope for ComfyUI** and stays as offline scripts in `core/scripts/`; the
   plugin only *consumes* the SegFormer checkpoint at `core/data/models/tattoo-segformer/`.
 
@@ -110,10 +114,13 @@ below. Both produce a `bool (H,W)` mask that flows into the same refine→inpain
     real+synthetic mix), CE(ignore_index=255)+Dice, bf16, `--smoke` for a quick loop check;
     `scripts/eval_seg.py` scores IoU/recall/precision (+ optional PSNR-to-`clean`) of seg vs. the
     box+SAM baseline on the held-out split.
-- **`deink/inpaint.py`** — `Inpainter`. Two backends: `"lama"` (simple-lama-inpainting,
-  fast, strong skin-texture fill) and `"sdxl"` (`diffusers` `AutoPipelineForInpainting` with
+- **`deink/inpaint.py`** — `Inpainter`. Backends: `"lama"` (simple-lama-inpainting,
+  fast, strong skin-texture fill), `"sdxl"` (`diffusers` `AutoPipelineForInpainting` with
   `diffusers/stable-diffusion-xl-1.0-inpainting-0.1`, runs at 1024px with model CPU offload,
-  composited back at native size). Models load lazily and stay resident.
+  composited back at native size), and `"twostage"` (`inpaint_twostage`: LaMa structure pass then
+  a low-strength SDXL texture pass — `DEFAULT_TWOSTAGE_STRENGTH = 0.5` — over the LaMa result; SDXL
+  at `strength<1` denoises *from* the LaMa fill, refining not regenerating). Models load lazily and
+  stay resident; two-stage adds no new model. `inpaint(..., backend=...)` dispatches all three.
 - **`deink/pipeline.py`** — `remove_tattoo(image, backend=..., mask=None, dilate=8,
   feather=5, ...) -> RemovalResult`. Pass a `mask` to skip detection (interactive path).
   `refine_mask` dilates (cover ink edges) and feathers (seamless blend). Returns `.image`,
@@ -128,7 +135,13 @@ below. Both produce a `bool (H,W)` mask that flows into the same refine→inpain
     `min_size` floor of the native res, and always fully contains the mask and stays in-bounds.
     `_inpaint_region` crops → `_fill` (the shared backend+composite seam) → pastes back into a
     copy, so the frame stays bit-identical outside the mask. `crop=False` restores the old
-    full-frame behaviour. Applies to `"lama"`, `"sdxl"`, and both legs of `"auto"`.
+    full-frame behaviour. Applies to `"lama"`, `"sdxl"`, `"twostage"`, and both legs of `"auto"`.
+  - **Two-stage backend (`backend="twostage"`):** LaMa roughs in structure, then a low-strength
+    SDXL pass adds skin texture over the LaMa result (see `deink/inpaint.py`); it flows through the
+    same `_fill`/crop seam (`_NATIVE_RES["twostage"] = 1024`) with no `_fill` change. **`"auto"` now
+    routes its large-component leg through `"twostage"`** (was plain `"sdxl"`), so `auto` output is
+    no longer bit-identical to the retired sdxl-auto. Extra `**inpaint_kwargs` (prompt/strength/…)
+    reach the SDXL pass (or two-stage's SDXL stage).
 - **`deink/utils.py`** — `get_device`, `ensure_pil`, `mask_to_pil`, `empty_mask`.
 
 Heavy model objects live on `TattooSegmenter` / `Inpainter` instances — construct once and

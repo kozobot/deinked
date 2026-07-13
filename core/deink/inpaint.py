@@ -14,6 +14,9 @@ from .utils import ensure_pil, get_device, mask_to_pil
 SDXL_INPAINT_ID = "diffusers/stable-diffusion-xl-1.0-inpainting-0.1"
 DEFAULT_SD_PROMPT = "bare skin, natural skin texture, seamless, photorealistic"
 DEFAULT_SD_NEGATIVE = "tattoo, ink, drawing, text, blurry, deformed, artifacts"
+# Second-stage SDXL strength for the two-stage fill: low enough to keep the LaMa structure it
+# denoises from, high enough to lay down real skin texture over the smear.
+DEFAULT_TWOSTAGE_STRENGTH = 0.5
 
 
 class Inpainter:
@@ -95,9 +98,46 @@ class Inpainter:
         # Only replace masked pixels; keep the rest bit-identical to the input.
         return Image.composite(out, image, mask_img)
 
+    def inpaint_twostage(
+        self,
+        image,
+        mask,
+        strength: float = DEFAULT_TWOSTAGE_STRENGTH,
+        **sdxl_kwargs,
+    ) -> Image.Image:
+        """Two-stage fill: LaMa roughs in low-frequency structure, then a low-strength SDXL
+        pass adds skin texture over that result.
+
+        LaMa extends nearby texture into the hole but has no semantics, so on a limb-sized hole
+        it collapses to a smear; a single high-strength SDXL pass reconstructs structure but can
+        look plastic / re-invent detail. Running SDXL at ``strength`` ~0.5 over the LaMa fill
+        seeds its denoising *from that fill* (noise ∝ strength added to the masked latents), so
+        it refines the roughed-in structure into natural skin instead of generating from scratch.
+
+        ``mask`` may be soft (feathered): the LaMa stage hard-thresholds it (LaMa wants a binary
+        hole) and is feathered back on; the SDXL stage uses the soft mask directly and composites
+        internally, so pixels outside the mask stay bit-identical to ``image``. ``**sdxl_kwargs``
+        (prompt/negative_prompt/guidance_scale/num_inference_steps/seed) flow to the SDXL stage
+        only.
+        """
+        image = ensure_pil(image)
+        mask_img = (
+            mask if isinstance(mask, Image.Image) else mask_to_pil(np.asarray(mask))
+        ).convert("L")
+        # Stage 1 — structure: LaMa on a hard binary hole, feathered back onto the input.
+        hard = mask_to_pil(np.asarray(mask_img) > 127)
+        interim = self.inpaint_lama(image, hard)
+        interim = Image.composite(interim, image, mask_img)
+        # Stage 2 — texture: low-strength SDXL over the LaMa result.
+        return self.inpaint_sdxl(interim, mask_img, strength=strength, **sdxl_kwargs)
+
     def inpaint(self, image, mask, backend: str = "lama", **kwargs) -> Image.Image:
         if backend == "lama":
             return self.inpaint_lama(image, mask)
         if backend == "sdxl":
             return self.inpaint_sdxl(image, mask, **kwargs)
-        raise ValueError(f"Unknown inpaint backend: {backend!r} (use 'lama' or 'sdxl')")
+        if backend == "twostage":
+            return self.inpaint_twostage(image, mask, **kwargs)
+        raise ValueError(
+            f"Unknown inpaint backend: {backend!r} (use 'lama', 'sdxl', or 'twostage')"
+        )
