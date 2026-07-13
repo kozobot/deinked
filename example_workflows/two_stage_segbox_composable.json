@@ -86,13 +86,13 @@
     },
     {
       "id": 11,
-      "type": "GroundingDinoModelLoader",
+      "type": "GroundingDinoModelLoader (segment anything)",
       "pos": [
         392,
         270
       ],
       "size": [
-        320,
+        340,
         60
       ],
       "flags": {},
@@ -110,7 +110,7 @@
         }
       ],
       "properties": {
-        "Node name for S&R": "GroundingDinoModelLoader"
+        "Node name for S&R": "GroundingDinoModelLoader (segment anything)"
       },
       "widgets_values": [
         "GroundingDINO_SwinT_OGC (694MB)"
@@ -118,13 +118,13 @@
     },
     {
       "id": 12,
-      "type": "SAMModelLoader",
+      "type": "SAMModelLoader (segment anything)",
       "pos": [
         392,
         370
       ],
       "size": [
-        320,
+        340,
         60
       ],
       "flags": {},
@@ -142,7 +142,7 @@
         }
       ],
       "properties": {
-        "Node name for S&R": "SAMModelLoader"
+        "Node name for S&R": "SAMModelLoader (segment anything)"
       },
       "widgets_values": [
         "sam_vit_h (2.56GB)"
@@ -150,28 +150,28 @@
     },
     {
       "id": 13,
-      "type": "GroundingDinoSAMSegment",
+      "type": "GroundingDinoSAMSegment (segment anything)",
       "pos": [
         392,
         470
       ],
       "size": [
-        320,
-        140
+        340,
+        150
       ],
       "flags": {},
       "order": 3,
       "mode": 0,
       "inputs": [
         {
-          "name": "grounding_dino_model",
-          "type": "GROUNDING_DINO_MODEL",
-          "link": 14
-        },
-        {
           "name": "sam_model",
           "type": "SAM_MODEL",
           "link": 15
+        },
+        {
+          "name": "grounding_dino_model",
+          "type": "GROUNDING_DINO_MODEL",
+          "link": 14
         },
         {
           "name": "image",
@@ -196,7 +196,7 @@
         }
       ],
       "properties": {
-        "Node name for S&R": "GroundingDinoSAMSegment"
+        "Node name for S&R": "GroundingDinoSAMSegment (segment anything)"
       },
       "widgets_values": [
         "a tattoo",
@@ -209,7 +209,7 @@
       "type": "MaskComposite",
       "pos": [
         392,
-        650
+        660
       ],
       "size": [
         300,
@@ -255,7 +255,7 @@
       "type": "DeinkRefineMask",
       "pos": [
         392,
-        820
+        830
       ],
       "size": [
         300,
@@ -295,7 +295,7 @@
       "type": "DeinkInpaint",
       "pos": [
         392,
-        980
+        990
       ],
       "size": [
         320,
@@ -354,7 +354,7 @@
       "type": "DeinkLamaBackend",
       "pos": [
         40,
-        980
+        990
       ],
       "size": [
         300,
@@ -386,7 +386,7 @@
       "type": "DeinkTwoStageBackend",
       "pos": [
         40,
-        1080
+        1090
       ],
       "size": [
         300,
@@ -649,7 +649,7 @@
       11,
       0,
       13,
-      0,
+      1,
       "GROUNDING_DINO_MODEL"
     ],
     [
@@ -657,7 +657,7 @@
       12,
       0,
       13,
-      1,
+      0,
       "SAM_MODEL"
     ]
   ],
@@ -668,8 +668,8 @@
       "bounding": [
         382,
         60,
-        350,
-        730
+        360,
+        740
       ],
       "color": "#3f789e",
       "flags": {}
@@ -679,7 +679,7 @@
       "title": "Refine → inpaint",
       "bounding": [
         382,
-        800,
+        810,
         350,
         440
       ],
@@ -726,10 +726,10 @@
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.9,
+      "scale": 0.85,
       "offset": [
         120,
-        40
+        20
       ]
     }
   },
