@@ -39,10 +39,11 @@ def find_sample() -> str | None:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("image", nargs="?", default=None)
-    ap.add_argument("--backend", default="lama", choices=["lama", "sdxl", "auto", "twostage"],
-                    help="inpaint fill: lama, sdxl, twostage (lama structure -> low-strength sdxl "
-                         "texture), or auto (small mask blobs -> lama, large/limb-spanning -> "
-                         "twostage)")
+    ap.add_argument("--backend", default="lama",
+                    choices=["lama", "sdxl", "flux", "auto", "twostage"],
+                    help="inpaint fill: lama, sdxl, flux (FLUX.1 Fill, GGUF-quantized), twostage "
+                         "(lama structure -> low-strength sdxl texture), or auto (small mask blobs "
+                         "-> lama, large/limb-spanning -> twostage)")
     ap.add_argument("--auto-area-frac", type=float, default=0.02,
                     help="backend=auto: components >= this fraction of the image go to twostage")
     ap.add_argument("--prompt", default="a tattoo.")

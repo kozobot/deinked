@@ -28,6 +28,16 @@
   small components still route to the `Deink LaMa Backend`. Same SegFormer-`seg` defaults and
   checkpoint requirement as the composable graph. This matches what the all-in-one
   `Deink Remove Tattoo` node's `backend=auto` now does under the hood.
+- **`flux.json`** — the `two_stage.json` graph with the large-region backend swapped for a
+  **`Deink FLUX Fill Backend`** (`min_area_frac=0.02`, `guidance_scale=30`, `steps=30`,
+  `strength=1.0`): large / limb-spanning mask components get FLUX.1 Fill — the SOTA diffusion
+  inpainter, stronger structure/texture than SDXL — while small components still route to the
+  `Deink LaMa Backend`. FLUX is guidance-distilled, so the node has **no negative prompt** and
+  runs high guidance (~30). The 12B transformer loads **GGUF-quantized** (so it fits 16 GB under
+  CPU offload) and its base repo `black-forest-labs/FLUX.1-Fill-dev` is **gated** — `hf auth
+  login` and accept the license before the first run, which also downloads the GGUF + text
+  encoders/VAE (slow first run). Same SegFormer-`seg` defaults and checkpoint requirement as the
+  composable graph.
 - **`two_stage_segbox.json`** — the highest-recall two-stage path, built on the all-in-one
   **`Deink Remove Tattoo`** node: `localizer=seg+box` (SegFormer **∪** GroundingDINO+SAM box path,
   for max detection recall), `backend=auto` (small blobs → LaMa, large/limb-spanning → two-stage),
@@ -36,6 +46,18 @@
   The box path loads GroundingDINO + SAM (~3 GB) on first use, so the first run is slow (~90 s);
   warm runs add only a few seconds. On near-fully-tattooed subjects the box path helps little
   (its person-sized box is dropped by `max_area_frac`), so recall there is still SegFormer-bound.
+- **`two_stage_segbox_composable.json`** — the same seg+box two-stage path as `two_stage_segbox.json`
+  but with the all-in-one `Deink Remove Tattoo` **decomposed** into discrete nodes, so you can
+  inspect / hand-correct the intermediate mask. The `seg+box` union is built explicitly:
+  `Deink SegFormer` (seg half) and the commodity `GroundingDinoSAMSegment` (box half, prompt
+  "a tattoo") both feed a **`MaskComposite`** (operation `add` = union), whose mask flows into
+  `Deink Refine Mask` (`dilate=15`, `feather=6`) → `Deink Inpaint`. Inpaint gets a
+  `Deink LaMa Backend` (`min_area_frac=0`) + `Deink Two-Stage Backend` (`min_area_frac=0.02`,
+  `strength=0.5`) pair, reproducing `backend=auto`. **Requires storyicon's
+  [`comfyui_segment_anything`](https://github.com/storyicon/comfyui_segment_anything)** for the
+  three `GroundingDino*` / `SAMModelLoader` nodes (install via Manager) plus a trained SegFormer
+  checkpoint; without the pack ComfyUI flags those nodes as missing. Same recall/first-run notes
+  as `two_stage_segbox.json`.
 - **`segformer_path.json`** — self-contained, no commodity node needed:
   `Load Image → Deink SegFormer → Deink Refine Mask → Deink Inpaint → Save Image`, with a
   `Deink LaMa Backend` + `Deink SDXL Backend` pair feeding `Deink Inpaint`'s `backend_*` sockets

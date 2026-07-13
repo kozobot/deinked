@@ -1,10 +1,13 @@
-"""Inpainting backends: LaMa (fast texture fill) and SDXL (semantic fill).
+"""Inpainting backends: LaMa (fast texture fill), SDXL, and FLUX.1 Fill (semantic fills).
 
-Both are loaded lazily and kept resident once used. On a 16 GB card, run one backend at
-a time — SDXL inpainting is enabled with model CPU offload so it fits comfortably.
+All are loaded lazily and kept resident once used. On a 16 GB card, run one backend at
+a time — SDXL and FLUX inpainting are enabled with model CPU offload so they fit comfortably
+(FLUX additionally loads a GGUF-quantized transformer).
 """
 
 from __future__ import annotations
+
+import os
 
 import numpy as np
 from PIL import Image
@@ -18,12 +21,26 @@ DEFAULT_SD_NEGATIVE = "tattoo, ink, drawing, text, blurry, deformed, artifacts"
 # denoises from, high enough to lay down real skin texture over the smear.
 DEFAULT_TWOSTAGE_STRENGTH = 0.5
 
+# FLUX.1 Fill [dev] — SOTA inpainting, stronger structure/texture than SDXL. The base repo (VAE /
+# text encoders / scheduler) is *gated*: accept its license and `hf auth login` before first use.
+# The 12B transformer won't fit 16 GB unquantized, so it is loaded from a GGUF single-file build
+# (city96's non-gated mirror) and paired with the base pipeline's other components. Override the
+# GGUF (e.g. a smaller Q-level, or a local path) via DEINK_FLUX_GGUF.
+FLUX_FILL_ID = "black-forest-labs/FLUX.1-Fill-dev"
+FLUX_GGUF_URL = os.environ.get(
+    "DEINK_FLUX_GGUF",
+    "https://huggingface.co/city96/FLUX.1-Fill-dev-gguf/blob/main/flux1-fill-dev-Q4_K_S.gguf",
+)
+# FLUX is guidance-distilled; the Fill model wants a high guidance_scale (~30) and no negative.
+DEFAULT_FLUX_GUIDANCE = 30.0
+
 
 class Inpainter:
     def __init__(self, device=None):
         self.device = device or get_device()
         self._lama = None
         self._sdxl = None
+        self._flux = None
 
     # --- lazy loaders -------------------------------------------------------
     def _load_lama(self):
@@ -48,6 +65,35 @@ class Inpainter:
                 pipe.enable_model_cpu_offload()
             self._sdxl = pipe
         return self._sdxl
+
+    def _load_flux(self):
+        if self._flux is None:
+            import torch
+            from diffusers import (
+                FluxFillPipeline,
+                FluxTransformer2DModel,
+                GGUFQuantizationConfig,
+            )
+
+            use_cuda = getattr(self.device, "type", str(self.device)) == "cuda"
+            # FLUX runs in bfloat16; the transformer is dequantized from GGUF on the fly.
+            compute_dtype = torch.bfloat16 if use_cuda else torch.float32
+            transformer = FluxTransformer2DModel.from_single_file(
+                FLUX_GGUF_URL,
+                quantization_config=GGUFQuantizationConfig(compute_dtype=compute_dtype),
+                torch_dtype=compute_dtype,
+                config=FLUX_FILL_ID,
+                subfolder="transformer",
+            )
+            pipe = FluxFillPipeline.from_pretrained(
+                FLUX_FILL_ID, transformer=transformer, torch_dtype=compute_dtype
+            )
+            if use_cuda:
+                # Offload the resident text encoders / VAE so peak VRAM (with the GGUF
+                # transformer) stays under 16 GB — same discipline as SDXL, don't also .to(cuda).
+                pipe.enable_model_cpu_offload()
+            self._flux = pipe
+        return self._flux
 
     # --- backends -----------------------------------------------------------
     def inpaint_lama(self, image, mask) -> Image.Image:
@@ -98,6 +144,55 @@ class Inpainter:
         # Only replace masked pixels; keep the rest bit-identical to the input.
         return Image.composite(out, image, mask_img)
 
+    def inpaint_flux(
+        self,
+        image,
+        mask,
+        prompt: str = DEFAULT_SD_PROMPT,
+        guidance_scale: float = DEFAULT_FLUX_GUIDANCE,
+        num_inference_steps: int = 30,
+        strength: float = 1.0,
+        seed: int | None = None,
+        max_sequence_length: int = 512,
+    ) -> Image.Image:
+        """FLUX.1 Fill inpaint at 1024px, composited back onto the original at full resolution.
+
+        Mirrors :meth:`inpaint_sdxl` (run square at 1024, resize back, composite on the mask so
+        pixels outside it stay bit-identical). FLUX is guidance-distilled — it takes no
+        ``negative_prompt`` and wants a high ``guidance_scale`` (~30) — so the skin default is
+        steered by the positive ``prompt`` alone.
+        """
+        import torch
+
+        image = ensure_pil(image)
+        mask_img = (
+            mask if isinstance(mask, Image.Image) else mask_to_pil(np.asarray(mask))
+        ).convert("L")
+        pipe = self._load_flux()
+
+        # FLUX Fill works at 1024; run there then paste the result back at native size.
+        work = 1024
+        img_small = image.resize((work, work))
+        mask_small = mask_img.resize((work, work))
+        generator = None
+        if seed is not None:
+            generator = torch.Generator(device="cpu").manual_seed(seed)
+        out = pipe(
+            prompt=prompt,
+            image=img_small,
+            mask_image=mask_small,
+            height=work,
+            width=work,
+            strength=strength,
+            guidance_scale=guidance_scale,
+            num_inference_steps=num_inference_steps,
+            max_sequence_length=max_sequence_length,
+            generator=generator,
+        ).images[0]
+        out = out.resize(image.size)
+        # Only replace masked pixels; keep the rest bit-identical to the input.
+        return Image.composite(out, image, mask_img)
+
     def inpaint_twostage(
         self,
         image,
@@ -136,8 +231,10 @@ class Inpainter:
             return self.inpaint_lama(image, mask)
         if backend == "sdxl":
             return self.inpaint_sdxl(image, mask, **kwargs)
+        if backend == "flux":
+            return self.inpaint_flux(image, mask, **kwargs)
         if backend == "twostage":
             return self.inpaint_twostage(image, mask, **kwargs)
         raise ValueError(
-            f"Unknown inpaint backend: {backend!r} (use 'lama', 'sdxl', or 'twostage')"
+            f"Unknown inpaint backend: {backend!r} (use 'lama', 'sdxl', 'flux', or 'twostage')"
         )

@@ -143,9 +143,10 @@ Notes:
   heavily-inked skin the box detector collapses on. Selected with `localizer="seg"` /
   `"seg+box"`; loads a checkpoint trained by `scripts/train_tattooseg.py` (see Roadmap §1).
 - **`deink/inpaint.py`** — `Inpainter`: **LaMa** (fast, excellent skin-texture fill),
-  **SDXL inpainting** (semantic fill for harder regions), and a **two-stage** fill (LaMa
-  structure → low-strength SDXL texture) for large regions. Models load lazily; SDXL uses
-  model CPU offload to fit in 16 GB.
+  **SDXL inpainting** (semantic fill for harder regions), **FLUX.1 Fill** (SOTA diffusion fill,
+  GGUF-quantized, gated base repo), and a **two-stage** fill (LaMa structure → low-strength SDXL
+  texture) for large regions. Models load lazily; SDXL and FLUX use model CPU offload to fit in
+  16 GB.
 - **`deink/pipeline.py`** — `remove_tattoo`: orchestrates detect → segment → refine mask
   (dilate + feather) → inpaint → feathered composite at full resolution. Pixels outside the
   mask stay bit-identical to the input.
@@ -156,6 +157,7 @@ Notes:
 |---------|-------|----------|
 | `lama`  | fast (~seconds) | most tattoos on skin; strong default |
 | `sdxl`  | slower (diffusion) | large/complex regions needing semantic fill |
+| `flux`  | slowest (12B diffusion) | best structure/texture — FLUX.1 Fill, GGUF-quantized; gated base repo (`hf auth login`) |
 | `twostage` | slowest (LaMa + diffusion) | large/limb-spanning holes — LaMa structure then a low-strength (0.5) SDXL texture pass, coherent limbs without the plastic look |
 | `auto`  | per-region | mixed images — routes small blobs → LaMa, large/limb-spanning → two-stage |
 
@@ -303,8 +305,9 @@ value-to-effort for exactly this large-region case.
   "twostage"` on `remove_tattoo`, the app dropdown, `scripts/smoke_test.py`, and the all-in-one
   node; wired into the composable graph via the `DeinkTwoStageBackend` provider node. **`backend=
   "auto"` now routes large/limb-spanning components through two-stage** instead of plain SDXL (so
-  its output is no longer bit-identical to the retired sdxl-auto). Next: FLUX Fill as the texture
-  stage; tune the per-stage strength on the deepest holes.
+  its output is no longer bit-identical to the retired sdxl-auto). FLUX.1 Fill now ships as its own
+  `backend="flux"` (see "Better fill models" below); next, use it as the texture stage here and
+  tune the per-stage strength on the deepest holes.
 - **Guide the diffusion fill.** (a) **Prompt/negative-prompt** in `deink/inpaint.py`: describe the
   target ("bare skin, natural skin texture, even lighting, muscle") and negative-prompt the source
   ("tattoo, ink, text, lettering") so the model doesn't re-hallucinate ink — a common large-tattoo
@@ -316,7 +319,14 @@ value-to-effort for exactly this large-region case.
   erase bold ink but not so high it invents unrelated detail.
 - **Better fill models.** In rough order of quality/effort:
   - **FLUX.1 Fill [dev]** (Black Forest Labs) — current SOTA inpainting, better structure/texture
-    than SDXL; needs a quantized (GGUF / nf4) build to fit 16 GB.
+    than SDXL. ✅ *Implemented (`backend="flux"`).* Loaded with a **GGUF-quantized** transformer
+    (city96's non-gated mirror, `DEINK_FLUX_GGUF`-overridable) so the 12B model fits 16 GB, paired
+    with the base pipeline's VAE / text encoders / scheduler under `enable_model_cpu_offload()`.
+    The base repo `black-forest-labs/FLUX.1-Fill-dev` is **gated** — accept its license and
+    `hf auth login` before first use. FLUX is guidance-distilled: no negative prompt, high
+    `guidance_scale` (~30). Flows through the same crop-to-region + bit-identical composite seam as
+    SDXL (`_NATIVE_RES["flux"] = 1024`); wired into the composable graph via `DeinkFluxBackend`.
+    Next: FLUX Fill as the two-stage texture stage; benchmark vs. `twostage` on the deepest holes.
   - **PowerPaint** / **BrushNet** — diffusion inpainters with an explicit *object-removal* mode,
     designed for "remove this, fill plausibly."
   - **MAT** / **MI-GAN** / **ZITS** — large-hole specialists, better than LaMa on big masks if you
