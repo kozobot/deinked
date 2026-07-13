@@ -70,8 +70,9 @@ def _(mo):
         """
         # 🖋️ deinked — tattoo remover
         Upload a photo. The tool locates the tattoo (GroundingDINO + SAM) and paints it
-        out (LaMa, SDXL, or `auto` — route each region by size: small blobs to LaMa, large
-        sleeves to SDXL). If auto-detect misses, upload a black/white mask instead
+        out (LaMa, SDXL, `twostage` — LaMa structure then a light SDXL texture pass — or
+        `auto`, which routes each region by size: small blobs to LaMa, large sleeves to
+        two-stage). If auto-detect misses, upload a black/white mask instead
         (white = area to remove).
         """
     )
@@ -85,10 +86,13 @@ def _(localizer_choices, localizer_default, mo, seg_available):
         kind="button", label="Optional mask (white = remove)", filetypes=[".png", ".jpg", ".jpeg"]
     )
     # Default to "auto": crop-to-region validation showed LaMa is cleanest/fastest on small
-    # plain-skin tattoos while SDXL is needed to reconstruct structure across large ones, so
-    # per-component routing (small -> LaMa, large -> SDXL) gives the best visual result across
-    # image types. See the crop-to-region findings.
-    backend = mo.ui.dropdown(["lama", "sdxl", "auto"], value="auto", label="Inpaint backend")
+    # plain-skin tattoos while large ones need structure reconstruction, so per-component routing
+    # (small -> LaMa, large -> two-stage LaMa+SDXL) gives the best visual result across image
+    # types. See the crop-to-region findings. "twostage" forces the LaMa-structure -> SDXL-texture
+    # fill on the whole mask.
+    backend = mo.ui.dropdown(
+        ["lama", "sdxl", "auto", "twostage"], value="auto", label="Inpaint backend"
+    )
     localizer = mo.ui.dropdown(
         localizer_choices,
         value=localizer_default,

@@ -1,7 +1,7 @@
 """Quick end-to-end check for the segment-and-inpaint pipeline.
 
 Usage:
-    python scripts/smoke_test.py [IMAGE] [--backend lama|sdxl] [--prompt "a tattoo."]
+    python scripts/smoke_test.py [IMAGE] [--backend lama|sdxl|auto|twostage] [--prompt "a tattoo."]
 
 Picks a sample from data/ if no image is given. Saves a side-by-side to
 scratch/smoke_<backend>.png and prints timing + whether a tattoo was found.
@@ -39,11 +39,12 @@ def find_sample() -> str | None:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("image", nargs="?", default=None)
-    ap.add_argument("--backend", default="lama", choices=["lama", "sdxl", "auto"],
-                    help="inpaint fill: lama, sdxl, or auto (small mask blobs -> lama, "
-                         "large/limb-spanning -> sdxl)")
+    ap.add_argument("--backend", default="lama", choices=["lama", "sdxl", "auto", "twostage"],
+                    help="inpaint fill: lama, sdxl, twostage (lama structure -> low-strength sdxl "
+                         "texture), or auto (small mask blobs -> lama, large/limb-spanning -> "
+                         "twostage)")
     ap.add_argument("--auto-area-frac", type=float, default=0.02,
-                    help="backend=auto: components >= this fraction of the image go to sdxl")
+                    help="backend=auto: components >= this fraction of the image go to twostage")
     ap.add_argument("--prompt", default="a tattoo.")
     ap.add_argument("--box-threshold", type=float, default=0.25, help="detector box confidence")
     ap.add_argument("--text-threshold", type=float, default=0.2, help="detector text confidence")

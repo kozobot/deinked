@@ -142,8 +142,9 @@ Notes:
   fine-tuned SegFormer that emits the tattoo mask directly (no boxes, no SAM) so it masks
   heavily-inked skin the box detector collapses on. Selected with `localizer="seg"` /
   `"seg+box"`; loads a checkpoint trained by `scripts/train_tattooseg.py` (see Roadmap §1).
-- **`deink/inpaint.py`** — `Inpainter`: **LaMa** (fast, excellent skin-texture fill) and
-  **SDXL inpainting** (semantic fill for harder regions). Models load lazily; SDXL uses
+- **`deink/inpaint.py`** — `Inpainter`: **LaMa** (fast, excellent skin-texture fill),
+  **SDXL inpainting** (semantic fill for harder regions), and a **two-stage** fill (LaMa
+  structure → low-strength SDXL texture) for large regions. Models load lazily; SDXL uses
   model CPU offload to fit in 16 GB.
 - **`deink/pipeline.py`** — `remove_tattoo`: orchestrates detect → segment → refine mask
   (dilate + feather) → inpaint → feathered composite at full resolution. Pixels outside the
@@ -155,7 +156,8 @@ Notes:
 |---------|-------|----------|
 | `lama`  | fast (~seconds) | most tattoos on skin; strong default |
 | `sdxl`  | slower (diffusion) | large/complex regions needing semantic fill |
-| `auto`  | per-region | mixed images — routes small blobs → LaMa, large/limb-spanning → SDXL |
+| `twostage` | slowest (LaMa + diffusion) | large/limb-spanning holes — LaMa structure then a low-strength (0.5) SDXL texture pass, coherent limbs without the plastic look |
+| `auto`  | per-region | mixed images — routes small blobs → LaMa, large/limb-spanning → two-stage |
 
 ## Roadmap / follow-ups
 
@@ -250,7 +252,8 @@ value-to-effort for exactly this large-region case.
 
 - **Backend auto-selection (highest value, cheap).** ✅ *Implemented.* `remove_tattoo(...,
   backend="auto")` routes per mask instead of a global toggle: small masks → LaMa (fast, plain
-  skin), large or limb-spanning masks → SDXL. Confirmed necessary on `retouchme-86` (full-sleeve
+  skin), large or limb-spanning masks → two-stage (LaMa structure + low-strength SDXL texture; was
+  plain SDXL before the two-stage item below). Confirmed necessary on `retouchme-86` (full-sleeve
   tattoos): **LaMa dissolves the whole forearm into the background** on a limb-sized hole because
   it has no semantics, whereas **SDXL reconstructs a coherent arm/garment** (~11 s). Detection
   there was already correct (98% recall) — this is purely a fill-quality problem, so size-based
@@ -288,10 +291,20 @@ value-to-effort for exactly this large-region case.
   a clean native-resolution view**, so the "center of a big hole collapses to an average" premise
   this item targeted no longer occurs. At ~`onion_layers`× the inpaint calls for no gain, not worth
   shipping.
-- **Two-stage structure → texture.** Let one pass rough in low-frequency structure (LaMa, or a
-  large-hole specialist) and a second diffusion pass (SDXL/FLUX with `strength` ~0.4–0.6 over the
-  first result) add skin texture. Keeps limbs anatomically coherent while avoiding the plastic look
-  of a single high-strength diffusion pass.
+- **Two-stage structure → texture.** ✅ *Implemented (`backend="twostage"`).* One pass roughs in
+  low-frequency structure (LaMa) and a second, low-strength SDXL pass (`strength` default 0.5, in
+  the 0.4–0.6 band) runs over that result to add skin texture. Because SDXL is wired as an inpaint
+  pipeline, running it at `strength<1` over the LaMa fill **seeds its denoising from that fill**
+  (noise ∝ strength on the masked latents) — so it *refines* the roughed-in structure into natural
+  skin instead of generating from scratch, keeping limbs anatomically coherent while avoiding the
+  plastic look of a single high-strength pass. No new dependency or model load: `inpaint_twostage`
+  composes the existing `inpaint_lama` + `inpaint_sdxl`, and inherits crop-to-region + the
+  bit-identical composite for free (`_NATIVE_RES["twostage"] = 1024`). Selectable as `backend=
+  "twostage"` on `remove_tattoo`, the app dropdown, `scripts/smoke_test.py`, and the all-in-one
+  node; wired into the composable graph via the `DeinkTwoStageBackend` provider node. **`backend=
+  "auto"` now routes large/limb-spanning components through two-stage** instead of plain SDXL (so
+  its output is no longer bit-identical to the retired sdxl-auto). Next: FLUX Fill as the texture
+  stage; tune the per-stage strength on the deepest holes.
 - **Guide the diffusion fill.** (a) **Prompt/negative-prompt** in `deink/inpaint.py`: describe the
   target ("bare skin, natural skin texture, even lighting, muscle") and negative-prompt the source
   ("tattoo, ink, text, lettering") so the model doesn't re-hallucinate ink — a common large-tattoo

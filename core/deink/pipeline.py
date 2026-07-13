@@ -51,7 +51,8 @@ def refine_mask(mask: np.ndarray, dilate: int = 8, feather: int = 5) -> np.ndarr
 # Native working resolution per backend, used as a floor for the crop-to-region window so a
 # small tattoo is fed a crop of *real* pixels around it rather than an upscaled thumbnail.
 # SDXL always runs at 1024 internally; LaMa is fully convolutional (no fixed size), so 0.
-_NATIVE_RES = {"sdxl": 1024, "lama": 0}
+# "twostage" ends in an SDXL pass, so it wants the same 1024 native window.
+_NATIVE_RES = {"sdxl": 1024, "lama": 0, "twostage": 1024}
 
 
 def _region_bbox(
@@ -248,12 +249,14 @@ def remove_tattoo(
     detection time). ``None`` uses the segmenter's own default.
 
     ``backend`` selects the inpaint fill: ``"lama"`` (fast feed-forward texture fill),
-    ``"sdxl"`` (diffusion, reconstructs structure across large holes), or ``"auto"`` — route
-    per connected mask component by size, sending small blobs to LaMa and large/limb-spanning
-    blobs to SDXL, so an image with both a wrist tattoo and a full sleeve gets the right model
+    ``"sdxl"`` (diffusion, reconstructs structure across large holes), ``"twostage"`` (LaMa
+    roughs in structure, then a low-strength SDXL pass adds skin texture over it — coherent
+    limbs without the plastic look of a single high-strength pass), or ``"auto"`` — route per
+    connected mask component by size, sending small blobs to LaMa and large/limb-spanning blobs
+    to two-stage, so an image with both a wrist tattoo and a full sleeve gets the right model
     for each. ``auto_area_frac`` (fraction of the image area) is the small/large cutoff for
-    ``"auto"``: a component covering >= this fraction goes to SDXL. Extra ``**inpaint_kwargs``
-    (prompt, strength, ...) flow to the SDXL pass.
+    ``"auto"``: a component covering >= this fraction goes to two-stage. Extra ``**inpaint_kwargs``
+    (prompt, strength, ...) flow to the SDXL pass (or the SDXL stage of ``"twostage"``).
 
     ``crop`` (default True) runs each inpaint pass on a padded window cropped around the mask
     at the backend's native resolution, rather than downscaling the whole frame — a small
@@ -310,7 +313,8 @@ def remove_tattoo(
     refined_img = mask_to_pil(refined)
 
     # 3. Inpaint. "auto" routes each connected mask component to the backend that fits its
-    #    size (small -> LaMa, large -> SDXL); "lama"/"sdxl" fill the whole mask with one.
+    #    size (small -> LaMa, large -> two-stage); "lama"/"sdxl"/"twostage" fill the whole mask
+    #    with one.
     inpainter = inpainter or Inpainter()
     if backend == "auto":
         image_area = image.size[0] * image.size[1]
@@ -322,7 +326,7 @@ def remove_tattoo(
             )
         if large.any():
             result = _inpaint_region(
-                inpainter, result, large, "sdxl", dilate, feather,
+                inpainter, result, large, "twostage", dilate, feather,
                 crop=crop, crop_pad=crop_pad, **inpaint_kwargs,
             )
     else:
