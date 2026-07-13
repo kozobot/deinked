@@ -91,7 +91,7 @@ def _(localizer_choices, localizer_default, mo, seg_available):
     # types. See the crop-to-region findings. "twostage" forces the LaMa-structure -> SDXL-texture
     # fill on the whole mask.
     backend = mo.ui.dropdown(
-        ["lama", "sdxl", "auto", "twostage"], value="auto", label="Inpaint backend"
+        ["lama", "sdxl", "flux", "auto", "twostage"], value="auto", label="Inpaint backend"
     )
     localizer = mo.ui.dropdown(
         localizer_choices,

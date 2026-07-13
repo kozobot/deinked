@@ -20,9 +20,10 @@ dependencies:
       - torchvision
       # --- Foundation models: detection + segmentation + inpainting ---
       - transformers>=4.44        # GroundingDINO + SAM live here (no CUDA-ext build)
-      - diffusers>=0.30           # SDXL inpainting pipeline
+      - diffusers>=0.32           # SDXL + FLUX.1 Fill inpainting pipelines (GGUF-aware)
       - accelerate
       - safetensors
+      - gguf                      # GGUF-quantized FLUX.1 Fill transformer loader
       - simple-lama-inpainting    # LaMa baseline inpainter (torchscript weights)
       # --- Imaging / app ---
       - opencv-python

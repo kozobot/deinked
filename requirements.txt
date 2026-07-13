@@ -1,8 +1,9 @@
 # Plugin runtime deps. torch/torchvision come from the ComfyUI host (needs a CUDA build with
 # sm_120/cu128 kernels for Blackwell GPUs — see README), so they are intentionally not listed.
 transformers>=5
-diffusers>=0.30
+diffusers>=0.32          # FluxFillPipeline + GGUFQuantizationConfig for the FLUX Fill backend
 accelerate
+gguf                     # GGUF-quantized FLUX.1 Fill transformer loader
 simple-lama-inpainting
 opencv-python
 Pillow

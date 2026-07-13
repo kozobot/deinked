@@ -28,6 +28,16 @@
   small components still route to the `Deink LaMa Backend`. Same SegFormer-`seg` defaults and
   checkpoint requirement as the composable graph. This matches what the all-in-one
   `Deink Remove Tattoo` node's `backend=auto` now does under the hood.
+- **`flux.json`** — the `two_stage.json` graph with the large-region backend swapped for a
+  **`Deink FLUX Fill Backend`** (`min_area_frac=0.02`, `guidance_scale=30`, `steps=30`,
+  `strength=1.0`): large / limb-spanning mask components get FLUX.1 Fill — the SOTA diffusion
+  inpainter, stronger structure/texture than SDXL — while small components still route to the
+  `Deink LaMa Backend`. FLUX is guidance-distilled, so the node has **no negative prompt** and
+  runs high guidance (~30). The 12B transformer loads **GGUF-quantized** (so it fits 16 GB under
+  CPU offload) and its base repo `black-forest-labs/FLUX.1-Fill-dev` is **gated** — `hf auth
+  login` and accept the license before the first run, which also downloads the GGUF + text
+  encoders/VAE (slow first run). Same SegFormer-`seg` defaults and checkpoint requirement as the
+  composable graph.
 - **`two_stage_segbox.json`** — the highest-recall two-stage path, built on the all-in-one
   **`Deink Remove Tattoo`** node: `localizer=seg+box` (SegFormer **∪** GroundingDINO+SAM box path,
   for max detection recall), `backend=auto` (small blobs → LaMa, large/limb-spanning → two-stage),

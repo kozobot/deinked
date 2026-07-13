@@ -10,7 +10,7 @@ node here (plus a case in ``deink.inpaint.Inpainter``); DeinkInpaint needs no ch
 ``DEINK_BACKEND`` is a custom ComfyUI link type: no registration is needed, only that producer
 ``RETURN_TYPES`` and consumer ``INPUT_TYPES`` use the same string. The descriptor schema is::
 
-    {"name": "lama" | "sdxl" | "twostage",  # consumed by deink.pipeline._fill / Inpainter.inpaint
+    {"name": "lama" | "sdxl" | "flux" | "twostage",  # consumed by deink.pipeline._fill / Inpainter
      "min_area_frac": float,     # route components >= this fraction of the image area here
      "kwargs": {...}}            # backend-specific inpaint kwargs (empty for lama)
 """
@@ -77,6 +77,48 @@ class DeinkSdxlBackend:
         if seed is not None and seed >= 0:
             kwargs["seed"] = seed
         return ({"name": "sdxl", "min_area_frac": min_area_frac, "kwargs": kwargs},)
+
+
+class DeinkFluxBackend:
+    """FLUX.1 Fill backend: SOTA diffusion inpainter, stronger structure/texture than SDXL.
+
+    Loads a GGUF-quantized FLUX.1 Fill [dev] transformer so the 12B model fits 16 GB (the base
+    repo is *gated* — accept its license and `hf auth login` before first use). FLUX is
+    guidance-distilled, so there is **no negative prompt** and ``guidance_scale`` runs high (~30);
+    the skin default is steered by the positive prompt alone."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "min_area_frac": ("FLOAT", {"default": 0.02, "min": 0.0, "max": 1.0, "step": 0.005,
+                    "tooltip": "Route mask components >= this fraction of the image area to FLUX."}),
+                "prompt": ("STRING", {"default": "", "multiline": True,
+                    "tooltip": "Blank uses deink's skin default. FLUX takes no negative prompt."}),
+                "guidance_scale": ("FLOAT", {"default": 30.0, "min": 0.0, "max": 50.0, "step": 0.5,
+                    "tooltip": "FLUX Fill wants high guidance (~30)."}),
+                "steps": ("INT", {"default": 30, "min": 1, "max": 150, "step": 1}),
+                "strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "seed": ("INT", {"default": -1, "min": -1, "max": 0xFFFFFFFFFFFFFFFF,
+                    "tooltip": "-1 = random."}),
+            },
+        }
+
+    RETURN_TYPES = ("DEINK_BACKEND",)
+    RETURN_NAMES = ("backend",)
+    FUNCTION = "make"
+    CATEGORY = "deink"
+
+    def make(self, min_area_frac, prompt, guidance_scale, steps, strength, seed):
+        # Kwargs flow to deink's inpaint_flux; same assembly as the SDXL backend but with no
+        # negative_prompt (FLUX is guidance-distilled and ignores it).
+        kwargs = {"guidance_scale": guidance_scale, "num_inference_steps": steps,
+                  "strength": strength}
+        if prompt:
+            kwargs["prompt"] = prompt
+        if seed is not None and seed >= 0:
+            kwargs["seed"] = seed
+        return ({"name": "flux", "min_area_frac": min_area_frac, "kwargs": kwargs},)
 
 
 class DeinkTwoStageBackend:
