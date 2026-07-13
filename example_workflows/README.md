@@ -46,6 +46,18 @@
   The box path loads GroundingDINO + SAM (~3 GB) on first use, so the first run is slow (~90 s);
   warm runs add only a few seconds. On near-fully-tattooed subjects the box path helps little
   (its person-sized box is dropped by `max_area_frac`), so recall there is still SegFormer-bound.
+- **`two_stage_segbox_composable.json`** — the same seg+box two-stage path as `two_stage_segbox.json`
+  but with the all-in-one `Deink Remove Tattoo` **decomposed** into discrete nodes, so you can
+  inspect / hand-correct the intermediate mask. The `seg+box` union is built explicitly:
+  `Deink SegFormer` (seg half) and the commodity `GroundingDinoSAMSegment` (box half, prompt
+  "a tattoo") both feed a **`MaskComposite`** (operation `add` = union), whose mask flows into
+  `Deink Refine Mask` (`dilate=15`, `feather=6`) → `Deink Inpaint`. Inpaint gets a
+  `Deink LaMa Backend` (`min_area_frac=0`) + `Deink Two-Stage Backend` (`min_area_frac=0.02`,
+  `strength=0.5`) pair, reproducing `backend=auto`. **Requires storyicon's
+  [`comfyui_segment_anything`](https://github.com/storyicon/comfyui_segment_anything)** for the
+  three `GroundingDino*` / `SAMModelLoader` nodes (install via Manager) plus a trained SegFormer
+  checkpoint; without the pack ComfyUI flags those nodes as missing. Same recall/first-run notes
+  as `two_stage_segbox.json`.
 - **`segformer_path.json`** — self-contained, no commodity node needed:
   `Load Image → Deink SegFormer → Deink Refine Mask → Deink Inpaint → Save Image`, with a
   `Deink LaMa Backend` + `Deink SDXL Backend` pair feeding `Deink Inpaint`'s `backend_*` sockets
