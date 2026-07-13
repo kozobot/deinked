@@ -42,8 +42,10 @@ pip install -r deinked/requirements.txt
 | **Deink SegFormer** | IMAGE → MASK | Fine-tuned pixel-level tattoo localizer (the one localizer commodity nodes lack). No-ops to empty mask with no checkpoint. |
 | **Deink Refine Mask** | MASK → MASK | Dilate (cover ink edges) + Gaussian feather (seamless blend). Tuned defaults (8/5). |
 | **Deink Split Mask by Size** | MASK → MASK, MASK | Split components into `small` / `large` by area, to route each to a different inpainter. |
-| **Deink Inpaint** | IMAGE + MASK → IMAGE | LaMa / SDXL / `auto`, at the backend's *native resolution* (crop-to-region), compositing so pixels outside the mask stay bit-identical. Treats the mask as final — refine it upstream. |
-| **Deink Remove Tattoo** | IMAGE → IMAGE, MASK | All-in-one: the whole pipeline in one node (defaults to the SegFormer localizer). |
+| **Deink LaMa Backend** | → DEINK_BACKEND | Configures a LaMa backend (just a `min_area_frac` routing threshold); wire into Deink Inpaint. |
+| **Deink SDXL Backend** | → DEINK_BACKEND | Configures an SDXL backend (prompt, strength, steps, seed, …) + its `min_area_frac`; wire into Deink Inpaint. |
+| **Deink Inpaint** | IMAGE + MASK (+ DEINK_BACKEND…) → IMAGE | Runs at the backend's *native resolution* (crop-to-region), compositing so pixels outside the mask stay bit-identical. Wire one or more backend nodes into its `backend_*` sockets; it auto-routes each mask component to the backend matching its size (falls back to a plain LaMa fill if none wired). Treats the mask as final — refine it upstream. |
+| **Deink Remove Tattoo** | IMAGE → IMAGE, MASK | All-in-one: the whole pipeline in one node (defaults to the SegFormer localizer; keeps its own `backend` = `lama`/`sdxl`/`auto` knob). |
 
 ## Typical graphs
 
@@ -56,12 +58,15 @@ Load Image → GroundingDinoSAMSegment (prompt "a tattoo") → Deink Refine Mask
 ```
 Load Image → Deink SegFormer → Deink Refine Mask → Deink Inpaint → Save
 ```
+Wire a `Deink LaMa Backend` and/or `Deink SDXL Backend` into `Deink Inpaint`'s `backend_*` sockets
+to choose the fill model(s); with none wired it defaults to a plain LaMa fill.
 
 **Interactive:** run either localizer, right-click the MASK → *Open in MaskEditor* to hand-correct,
 then feed it to Deink Inpaint.
 
-**Mixed sizes:** `Deink Split Mask by Size` → small→`Deink Inpaint(lama)`, large→`Deink Inpaint(sdxl)`
-(or just use `Deink Inpaint` with `backend=auto`).
+**Mixed sizes:** wire both a `Deink LaMa Backend` (`min_area_frac=0`) and a `Deink SDXL Backend`
+(`min_area_frac=0.02`) into `Deink Inpaint` — it routes each mask component by size (small → LaMa,
+large → SDXL) automatically. Add a third backend node with its own threshold for a third tier.
 
 Example workflows live in [`example_workflows/`](example_workflows/).
 

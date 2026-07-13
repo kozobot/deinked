@@ -12,15 +12,20 @@
   `Deink Remove Tattoo` node **decomposed** into the discrete pipeline stages
   `Deink SegFormer → Deink Refine Mask → Deink Inpaint`, so you can inspect the intermediate mask
   and tune each stage independently (or hand-correct the mask via **Open in MaskEditor** before
-  inpaint). Uses the `seg` localizer with the app's defaults (`backend=auto`, `seg_threshold=0.5`,
-  `dilate=8`, `feather=5`, `crop`, `crop_pad=0.5`), so — like the all-in-one `seg` path — it needs
-  a trained SegFormer checkpoint (else `Deink SegFormer` yields an empty mask and the image passes
-  through). Install into `user/default/workflows/` to see it in the **Workflows** tab.
+  inpaint). `Deink Inpaint` gets its backends from a `Deink LaMa Backend` (`min_area_frac=0`) +
+  `Deink SDXL Backend` (`min_area_frac=0.02`) pair wired into its `backend_*` sockets; it
+  auto-routes each mask component to the backend whose `min_area_frac` matches the component's
+  size (small → LaMa, large → SDXL). Uses the `seg` localizer with the app's defaults
+  (`seg_threshold=0.5`, `dilate=8`, `feather=5`, `crop`, `crop_pad=0.5`), so — like the all-in-one
+  `seg` path — it needs a trained SegFormer checkpoint (else `Deink SegFormer` yields an empty mask
+  and the image passes through). Install into `user/default/workflows/` to see it in the
+  **Workflows** tab.
 - **`segformer_path.json`** — self-contained, no commodity node needed:
-  `Load Image → Deink SegFormer → Deink Refine Mask → Deink Inpaint (auto) → Save Image`.
-  Requires a trained SegFormer checkpoint at `core/data/models/tattoo-segformer/` (or
-  `$DEINK_TATTOOSEG_DIR`); with none present, `Deink SegFormer` yields an empty mask and the
-  graph passes the image through unchanged.
+  `Load Image → Deink SegFormer → Deink Refine Mask → Deink Inpaint → Save Image`, with a
+  `Deink LaMa Backend` + `Deink SDXL Backend` pair feeding `Deink Inpaint`'s `backend_*` sockets
+  (so it auto-routes by region size). Requires a trained SegFormer checkpoint at
+  `core/data/models/tattoo-segformer/` (or `$DEINK_TATTOOSEG_DIR`); with none present,
+  `Deink SegFormer` yields an empty mask and the graph passes the image through unchanged.
 
 ## Box path (commodity localization)
 

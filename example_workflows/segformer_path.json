@@ -1,6 +1,6 @@
 {
-  "last_node_id": 5,
-  "last_link_id": 5,
+  "last_node_id": 7,
+  "last_link_id": 7,
   "nodes": [
     {
       "id": 1,
@@ -54,11 +54,40 @@
       "mode": 0,
       "inputs": [
         {"name": "image", "type": "IMAGE", "link": 4},
-        {"name": "mask", "type": "MASK", "link": 3}
+        {"name": "mask", "type": "MASK", "link": 3},
+        {"name": "backend_1", "type": "DEINK_BACKEND", "link": 6},
+        {"name": "backend_2", "type": "DEINK_BACKEND", "link": 7},
+        {"name": "backend_3", "type": "DEINK_BACKEND", "link": null}
       ],
       "outputs": [{"name": "image", "type": "IMAGE", "links": [5], "slot_index": 0}],
       "properties": {"Node name for S&R": "DeinkInpaint"},
-      "widgets_values": ["auto", true, 0.5, 0.02, "", "", 0.99, 8.0, 30, -1]
+      "widgets_values": [true, 0.5]
+    },
+    {
+      "id": 6,
+      "type": "DeinkLamaBackend",
+      "pos": [1020, 480],
+      "size": [300, 60],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [{"name": "backend", "type": "DEINK_BACKEND", "links": [6], "slot_index": 0}],
+      "properties": {"Node name for S&R": "DeinkLamaBackend"},
+      "widgets_values": [0.0]
+    },
+    {
+      "id": 7,
+      "type": "DeinkSdxlBackend",
+      "pos": [1020, 580],
+      "size": [300, 250],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [{"name": "backend", "type": "DEINK_BACKEND", "links": [7], "slot_index": 0}],
+      "properties": {"Node name for S&R": "DeinkSdxlBackend"},
+      "widgets_values": [0.02, "", "", 0.99, 8.0, 30, -1]
     },
     {
       "id": 5,
@@ -79,7 +108,9 @@
     [2, 2, 0, 3, 0, "MASK"],
     [3, 3, 0, 4, 1, "MASK"],
     [4, 1, 0, 4, 0, "IMAGE"],
-    [5, 4, 0, 5, 0, "IMAGE"]
+    [5, 4, 0, 5, 0, "IMAGE"],
+    [6, 6, 0, 4, 2, "DEINK_BACKEND"],
+    [7, 7, 0, 4, 3, "DEINK_BACKEND"]
   ],
   "groups": [],
   "config": {},

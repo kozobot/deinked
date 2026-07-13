@@ -168,6 +168,33 @@ def _split_by_component_size(
     return small, large
 
 
+def _route_by_component_size(
+    raw: np.ndarray, image_area: int, thresholds: list[float]
+) -> list[np.ndarray]:
+    """Partition a bool mask by connected component into ``len(thresholds)`` sub-masks.
+
+    ``thresholds[i]`` is the minimum image-area fraction a component must reach to be routed to
+    output ``i``. Each component goes to the output with the *greatest* threshold that is still
+    ``<=`` its own area fraction; components smaller than every threshold fall back to the
+    smallest-threshold output. The returned list is aligned with ``thresholds`` (index i ↔
+    thresholds[i]). This generalizes :func:`_split_by_component_size` to N size tiers: with
+    ``thresholds=[0.0, auto_area_frac]`` it reproduces its ``(small, large)`` split exactly.
+    """
+    order = sorted(range(len(thresholds)), key=lambda i: thresholds[i])
+    fallback = order[0]
+    out = [np.zeros_like(raw, dtype=bool) for _ in thresholds]
+    n_labels, labels = cv2.connectedComponents(raw.astype(np.uint8))
+    for label in range(1, n_labels):  # 0 is background
+        comp = labels == label
+        frac = comp.sum() / image_area
+        chosen = fallback
+        for i in order:  # ascending threshold; last match wins
+            if thresholds[i] <= frac:
+                chosen = i
+        out[chosen] |= comp
+    return out
+
+
 def remove_tattoo(
     image,
     backend: str = "lama",

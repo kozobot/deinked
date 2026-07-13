@@ -1,7 +1,9 @@
-"""DeinkInpaint — fill a masked region with LaMa / SDXL / auto, at the backend's native res.
+"""DeinkInpaint — fill a masked region using backend(s) wired in from the workflow.
 
-We own this node (rather than reuse a commodity inpainter) because the two behaviours that make
-deink's fills clean must *wrap* the backend call:
+Backends are configured on their own provider nodes (DeinkLamaBackend / DeinkSdxlBackend) and
+plugged into this node's ``DEINK_BACKEND`` sockets; this node just auto-routes and runs them. We
+own this node (rather than reuse a commodity inpainter) because the two behaviours that make
+deink's fills clean must *wrap* each backend call:
 
 - **crop-to-native** (``deink.pipeline._region_bbox`` + ``_NATIVE_RES``): each pass runs on a
   padded window around the mask at the backend's native resolution, so a small tattoo on a large
@@ -9,8 +11,12 @@ deink's fills clean must *wrap* the backend call:
 - **bit-identical composite** (``deink.pipeline._fill``): pixels outside the mask stay identical
   to the input.
 
-``backend="auto"`` routes each connected mask component by size (small -> LaMa, large -> SDXL) via
-``_split_by_component_size``, mirroring ``remove_tattoo``.
+**Auto-routing:** the mask is split into connected components, and each is routed to the wired
+backend with the greatest ``min_area_frac`` that is still ``<=`` the component's image-area
+fraction (``_route_by_component_size``), falling back to the smallest-``min_area_frac`` backend.
+Passes run in ascending ``min_area_frac`` order, so a small-region backend (e.g. LaMa) runs first
+and a large-region backend (e.g. SDXL) operates on its output — mirroring the old ``backend="auto"``
+behaviour. With no backend wired, it falls back to a plain LaMa fill so the node works standalone.
 
 The incoming MASK is treated as the **final** mask (feather included) — refine it upstream with
 DeinkRefineMask; this node does not dilate/feather again.
@@ -32,23 +38,17 @@ class DeinkInpaint:
             "required": {
                 "image": ("IMAGE",),
                 "mask": ("MASK",),
-                "backend": (["lama", "sdxl", "auto"], {"default": "lama"}),
                 "crop": ("BOOLEAN", {"default": True,
                           "tooltip": "Inpaint a native-res window around the mask (recommended)."}),
                 "crop_pad": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 4.0, "step": 0.1,
                              "tooltip": "Context around the mask, as a fraction of its extent."}),
             },
             "optional": {
-                "auto_area_frac": ("FLOAT", {"default": 0.02, "min": 0.0, "max": 1.0, "step": 0.005,
-                                   "tooltip": "backend=auto: component >= this fraction -> SDXL."}),
-                "prompt": ("STRING", {"default": "", "multiline": True,
-                            "tooltip": "SDXL only; blank uses deink's skin default."}),
-                "negative_prompt": ("STRING", {"default": "", "multiline": True}),
-                "strength": ("FLOAT", {"default": 0.99, "min": 0.0, "max": 1.0, "step": 0.01}),
-                "guidance_scale": ("FLOAT", {"default": 8.0, "min": 0.0, "max": 30.0, "step": 0.5}),
-                "steps": ("INT", {"default": 30, "min": 1, "max": 150, "step": 1}),
-                "seed": ("INT", {"default": -1, "min": -1, "max": 0xFFFFFFFFFFFFFFFF,
-                          "tooltip": "-1 = random."}),
+                "backend_1": ("DEINK_BACKEND", {
+                    "tooltip": "A backend from a DeinkLamaBackend / DeinkSdxlBackend node. "
+                               "Wire several; each mask region is routed by its min_area_frac."}),
+                "backend_2": ("DEINK_BACKEND",),
+                "backend_3": ("DEINK_BACKEND",),
             },
         }
 
@@ -57,26 +57,20 @@ class DeinkInpaint:
     FUNCTION = "inpaint"
     CATEGORY = "deink"
 
-    def inpaint(self, image, mask, backend, crop, crop_pad, auto_area_frac=0.02,
-                prompt="", negative_prompt="", strength=0.99, guidance_scale=8.0,
-                steps=30, seed=-1):
-        from deink.pipeline import _NATIVE_RES, _fill, _region_bbox, _split_by_component_size
+    def inpaint(self, image, mask, crop, crop_pad, backend_1=None, backend_2=None, backend_3=None):
+        from deink.pipeline import _NATIVE_RES, _fill, _region_bbox, _route_by_component_size
 
         pil = tensor_to_pil(image)
         refined = mask_to_float_np(mask)  # treat incoming mask as final (H,W) float
         if not (refined > 0).any():
             return (image,)  # nothing masked — passthrough, bit-identical
 
-        inpainter = get_inpainter()
+        backends = [b for b in (backend_1, backend_2, backend_3) if b is not None]
+        if not backends:
+            # No backend wired — behave like a plain LaMa fill so the node works standalone.
+            backends = [{"name": "lama", "min_area_frac": 0.0, "kwargs": {}}]
 
-        sdxl_kwargs = {"strength": strength, "guidance_scale": guidance_scale,
-                       "num_inference_steps": steps}
-        if prompt:
-            sdxl_kwargs["prompt"] = prompt
-        if negative_prompt:
-            sdxl_kwargs["negative_prompt"] = negative_prompt
-        if seed is not None and seed >= 0:
-            sdxl_kwargs["seed"] = seed
+        inpainter = get_inpainter()
 
         def fill_region(img: Image.Image, region: np.ndarray, be: str, **kw) -> Image.Image:
             """Mirror of deink._inpaint_region minus the internal refine: the given region float
@@ -92,17 +86,13 @@ class DeinkInpaint:
                     return out
             return _fill(inpainter, img, region, be, **kw)
 
-        if backend == "auto":
-            binary = refined > 0.5
-            small, large = _split_by_component_size(binary, pil.size[0] * pil.size[1], auto_area_frac)
-            result = pil
-            if small.any():
-                result = fill_region(result, refined * small, "lama")
-            if large.any():
-                result = fill_region(result, refined * large, "sdxl", **sdxl_kwargs)
-        elif backend == "sdxl":
-            result = fill_region(pil, refined, "sdxl", **sdxl_kwargs)
-        else:
-            result = fill_region(pil, refined, "lama")
+        binary = refined > 0.5
+        parts = _route_by_component_size(
+            binary, pil.size[0] * pil.size[1], [b["min_area_frac"] for b in backends]
+        )
+        result = pil
+        for b, part in sorted(zip(backends, parts), key=lambda bp: bp[0]["min_area_frac"]):
+            if part.any():
+                result = fill_region(result, refined * part, b["name"], **b["kwargs"])
 
         return (pil_to_tensor(result),)

@@ -19,12 +19,22 @@ root `__init__.py`) and **imports the canonical `deink` code** — there is no v
 
 - Plugin root: `__init__.py` (`NODE_CLASS_MAPPINGS` + the `sys.path`/`DEINK_TATTOOSEG_DIR` shim),
   `convert.py` (IMAGE/MASK tensor ↔ PIL/numpy), `models.py` (cached model singletons),
-  `nodes/*.py` (the 5 node classes), `pyproject.toml` (`[tool.comfy]`), `example_workflows/`.
-- Nodes: `DeinkSegFormer`, `DeinkRefineMask`, `DeinkSplitMaskBySize`, `DeinkInpaint`,
-  `DeinkRemoveTattoo`. Box localization reuses the commodity `comfyui_segment_anything` node
-  (interop via the `MASK` type, not imported); we own `DeinkInpaint` so crop-to-native +
-  bit-identical composite wrap the backend. `DeinkInpaint` treats its input mask as *final*
-  (refine upstream with `DeinkRefineMask`; it does not re-refine).
+  `nodes/*.py` (the 7 node classes), `pyproject.toml` (`[tool.comfy]`), `example_workflows/`.
+- Nodes: `DeinkSegFormer`, `DeinkRefineMask`, `DeinkSplitMaskBySize`, `DeinkLamaBackend`,
+  `DeinkSdxlBackend`, `DeinkInpaint`, `DeinkRemoveTattoo`. Box localization reuses the commodity
+  `comfyui_segment_anything` node (interop via the `MASK` type, not imported); we own `DeinkInpaint`
+  so crop-to-native + bit-identical composite wrap the backend. `DeinkInpaint` treats its input mask
+  as *final* (refine upstream with `DeinkRefineMask`; it does not re-refine).
+  - **Backend as a wired input (`nodes/backend.py`):** `DeinkInpaint` has **no `backend` combo**.
+    Instead `DeinkLamaBackend` / `DeinkSdxlBackend` are provider nodes that emit a custom
+    `DEINK_BACKEND` descriptor (`{"name", "min_area_frac", "kwargs"}`) into `DeinkInpaint`'s optional
+    `backend_1..3` sockets; SDXL params (prompt/strength/steps/seed/…) live on the SDXL provider.
+    `DeinkInpaint` auto-routes each connected mask component to the wired backend whose
+    `min_area_frac` best matches the component's image-area fraction, via
+    `deink.pipeline._route_by_component_size` (the N-tier generalization of `_split_by_component_size`);
+    with the default pair (lama 0.0, sdxl 0.02) this is bit-identical to the retired `backend="auto"`.
+    No backend wired → a plain LaMa fill (standalone default). `DeinkRemoveTattoo` (all-in-one) is
+    unchanged — it keeps its own `backend` = `lama`/`sdxl`/`auto` string knob.
 - **Training is out of scope for ComfyUI** and stays as offline scripts in `core/scripts/`; the
   plugin only *consumes* the SegFormer checkpoint at `core/data/models/tattoo-segformer/`.
 

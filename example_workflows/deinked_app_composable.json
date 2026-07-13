@@ -1,6 +1,6 @@
 {
-  "last_node_id": 8,
-  "last_link_id": 8,
+  "last_node_id": 10,
+  "last_link_id": 10,
   "nodes": [
     {
       "id": 1,
@@ -54,11 +54,40 @@
       "mode": 0,
       "inputs": [
         {"name": "image", "type": "IMAGE", "link": 2},
-        {"name": "mask", "type": "MASK", "link": 4}
+        {"name": "mask", "type": "MASK", "link": 4},
+        {"name": "backend_1", "type": "DEINK_BACKEND", "link": 9},
+        {"name": "backend_2", "type": "DEINK_BACKEND", "link": 10},
+        {"name": "backend_3", "type": "DEINK_BACKEND", "link": null}
       ],
       "outputs": [{"name": "image", "type": "IMAGE", "links": [6], "slot_index": 0}],
       "properties": {"Node name for S&R": "DeinkInpaint"},
-      "widgets_values": ["auto", true, 0.5, 0.02, "", "", 0.99, 8.0, 30, -1]
+      "widgets_values": [true, 0.5]
+    },
+    {
+      "id": 9,
+      "type": "DeinkLamaBackend",
+      "pos": [40, 900],
+      "size": [300, 60],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [{"name": "backend", "type": "DEINK_BACKEND", "links": [9], "slot_index": 0}],
+      "properties": {"Node name for S&R": "DeinkLamaBackend"},
+      "widgets_values": [0.0]
+    },
+    {
+      "id": 10,
+      "type": "DeinkSdxlBackend",
+      "pos": [40, 1000],
+      "size": [300, 250],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [{"name": "backend", "type": "DEINK_BACKEND", "links": [10], "slot_index": 0}],
+      "properties": {"Node name for S&R": "DeinkSdxlBackend"},
+      "widgets_values": [0.02, "", "", 0.99, 8.0, 30, -1]
     },
     {
       "id": 5,
@@ -121,7 +150,9 @@
     [5, 3, 0, 6, 0, "MASK"],
     [6, 4, 0, 5, 0, "IMAGE"],
     [7, 6, 0, 7, 0, "IMAGE"],
-    [8, 1, 0, 8, 0, "IMAGE"]
+    [8, 1, 0, 8, 0, "IMAGE"],
+    [9, 9, 0, 4, 2, "DEINK_BACKEND"],
+    [10, 10, 0, 4, 3, "DEINK_BACKEND"]
   ],
   "groups": [
     {"title": "Pipeline (detect → refine → inpaint)", "bounding": [390, 130, 350, 660], "color": "#3f789e", "font_size": 24, "flags": {}},
