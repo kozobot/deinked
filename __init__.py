@@ -25,8 +25,10 @@ os.environ.setdefault(
 
 from .nodes import (  # noqa: E402  (import after sys.path/env setup)
     DeinkInpaint,
+    DeinkLamaBackend,
     DeinkRefineMask,
     DeinkRemoveTattoo,
+    DeinkSdxlBackend,
     DeinkSegFormer,
     DeinkSplitMaskBySize,
 )
@@ -35,6 +37,8 @@ NODE_CLASS_MAPPINGS = {
     "DeinkSegFormer": DeinkSegFormer,
     "DeinkRefineMask": DeinkRefineMask,
     "DeinkSplitMaskBySize": DeinkSplitMaskBySize,
+    "DeinkLamaBackend": DeinkLamaBackend,
+    "DeinkSdxlBackend": DeinkSdxlBackend,
     "DeinkInpaint": DeinkInpaint,
     "DeinkRemoveTattoo": DeinkRemoveTattoo,
 }
@@ -43,6 +47,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "DeinkSegFormer": "Deink SegFormer (tattoo mask)",
     "DeinkRefineMask": "Deink Refine Mask",
     "DeinkSplitMaskBySize": "Deink Split Mask by Size",
+    "DeinkLamaBackend": "Deink LaMa Backend",
+    "DeinkSdxlBackend": "Deink SDXL Backend",
     "DeinkInpaint": "Deink Inpaint",
     "DeinkRemoveTattoo": "Deink Remove Tattoo (all-in-one)",
 }
