@@ -1,7 +1,7 @@
 """Quick end-to-end check for the segment-and-inpaint pipeline.
 
 Usage:
-    python scripts/smoke_test.py [IMAGE] [--backend lama|sdxl|auto|twostage] [--prompt "a tattoo."]
+    python scripts/smoke_test.py [IMAGE] [--backend lama|sdxl|flux|auto|twostage|migan|mat] [--prompt "a tattoo."]
 
 Picks a sample from data/ if no image is given. Saves a side-by-side to
 scratch/smoke_<backend>.png and prints timing + whether a tattoo was found.
@@ -40,9 +40,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("image", nargs="?", default=None)
     ap.add_argument("--backend", default="lama",
-                    choices=["lama", "sdxl", "flux", "auto", "twostage"],
+                    choices=["lama", "sdxl", "flux", "auto", "twostage", "migan", "mat"],
                     help="inpaint fill: lama, sdxl, flux (FLUX.1 Fill, GGUF-quantized), twostage "
-                         "(lama structure -> low-strength sdxl texture), or auto (small mask blobs "
+                         "(lama structure -> low-strength sdxl texture), migan / mat (fast "
+                         "feed-forward GANs, Places2-domain — opt-in), or auto (small mask blobs "
                          "-> lama, large/limb-spanning -> twostage)")
     ap.add_argument("--auto-area-frac", type=float, default=0.02,
                     help="backend=auto: components >= this fraction of the image go to twostage")

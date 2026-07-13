@@ -3,6 +3,8 @@
 from .backend import (
     DeinkFluxBackend,
     DeinkLamaBackend,
+    DeinkMatBackend,
+    DeinkMiganBackend,
     DeinkSdxlBackend,
     DeinkTwoStageBackend,
 )
@@ -16,6 +18,8 @@ __all__ = [
     "DeinkFluxBackend",
     "DeinkInpaint",
     "DeinkLamaBackend",
+    "DeinkMatBackend",
+    "DeinkMiganBackend",
     "DeinkRefineMask",
     "DeinkRemoveTattoo",
     "DeinkSdxlBackend",

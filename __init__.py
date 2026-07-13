@@ -27,6 +27,8 @@ from .nodes import (  # noqa: E402  (import after sys.path/env setup)
     DeinkFluxBackend,
     DeinkInpaint,
     DeinkLamaBackend,
+    DeinkMatBackend,
+    DeinkMiganBackend,
     DeinkRefineMask,
     DeinkRemoveTattoo,
     DeinkSdxlBackend,
@@ -43,6 +45,8 @@ NODE_CLASS_MAPPINGS = {
     "DeinkSdxlBackend": DeinkSdxlBackend,
     "DeinkFluxBackend": DeinkFluxBackend,
     "DeinkTwoStageBackend": DeinkTwoStageBackend,
+    "DeinkMiganBackend": DeinkMiganBackend,
+    "DeinkMatBackend": DeinkMatBackend,
     "DeinkInpaint": DeinkInpaint,
     "DeinkRemoveTattoo": DeinkRemoveTattoo,
 }
@@ -55,6 +59,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "DeinkSdxlBackend": "Deink SDXL Backend",
     "DeinkFluxBackend": "Deink FLUX Fill Backend",
     "DeinkTwoStageBackend": "Deink Two-Stage Backend",
+    "DeinkMiganBackend": "Deink MI-GAN Backend",
+    "DeinkMatBackend": "Deink MAT Backend",
     "DeinkInpaint": "Deink Inpaint",
     "DeinkRemoveTattoo": "Deink Remove Tattoo (all-in-one)",
 }
