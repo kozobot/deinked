@@ -52,8 +52,22 @@ def refine_mask(mask: np.ndarray, dilate: int = 8, feather: int = 5) -> np.ndarr
 # small tattoo is fed a crop of *real* pixels around it rather than an upscaled thumbnail.
 # SDXL always runs at 1024 internally; LaMa is fully convolutional (no fixed size), so 0.
 # "twostage" ends in an SDXL pass, so it wants the same 1024 native window. FLUX Fill also runs
-# square at 1024, so it wants the same window.
-_NATIVE_RES = {"sdxl": 1024, "lama": 0, "twostage": 1024, "flux": 1024}
+# square at 1024, so it wants the same window. MI-GAN and MAT are 512px generators.
+_NATIVE_RES = {
+    "sdxl": 1024, "lama": 0, "twostage": 1024, "flux": 1024, "migan": 512, "mat": 512
+}
+
+# Feed-forward backends that fill a hard binary hole (no diffusion, no text kwargs) — routed
+# through the same hard-mask + feathered-composite path as LaMa in ``_fill``.
+_FEEDFORWARD = ("lama", "migan", "mat")
+
+# Which backend ``backend="auto"`` sends large / limb-spanning components to. Default is
+# "twostage" (LaMa structure + low-strength SDXL skin texture) — domain-appropriate for skin.
+# The feed-forward large-hole models (MAT/MI-GAN) are faster but ship Places2 *scene* weights,
+# so they hallucinate scene fragments on big holes over people; they stay opt-in (named backend /
+# provider node) rather than the auto default. Flip this to "mat"/"migan" to trade quality for
+# speed. Small components always go to LaMa.
+_AUTO_LARGE_BACKEND = "twostage"
 
 
 def _region_bbox(
@@ -103,12 +117,13 @@ def _fill(
     **inpaint_kwargs,
 ) -> Image.Image:
     """Inpaint ``image`` where ``refined`` (float mask over ``image``) is set, compositing so
-    pixels outside the mask stay bit-identical: LaMa gets a hard binary mask and is feathered
-    back on; SDXL blends with the soft mask directly (and composites internally)."""
+    pixels outside the mask stay bit-identical: the feed-forward backends (LaMa/MI-GAN/MAT)
+    get a hard binary mask and are feathered back on; SDXL blends with the soft mask directly
+    (and composites internally)."""
     refined_img = mask_to_pil(refined)
-    if backend == "lama":
+    if backend in _FEEDFORWARD:
         hard = mask_to_pil((refined > 0.5).astype(bool))
-        result = inpainter.inpaint(image, hard, backend="lama", **inpaint_kwargs)
+        result = inpainter.inpaint(image, hard, backend=backend, **inpaint_kwargs)
         return Image.composite(result, image, refined_img)
     return inpainter.inpaint(image, refined_img, backend=backend, **inpaint_kwargs)
 
@@ -316,8 +331,8 @@ def remove_tattoo(
     refined_img = mask_to_pil(refined)
 
     # 3. Inpaint. "auto" routes each connected mask component to the backend that fits its
-    #    size (small -> LaMa, large -> two-stage); "lama"/"sdxl"/"twostage" fill the whole mask
-    #    with one.
+    #    size (small -> LaMa, large -> `_AUTO_LARGE_BACKEND`, default two-stage); the named
+    #    backends fill the whole mask with one.
     inpainter = inpainter or Inpainter()
     if backend == "auto":
         image_area = image.size[0] * image.size[1]
@@ -328,9 +343,12 @@ def remove_tattoo(
                 inpainter, result, small, "lama", dilate, feather, crop=crop, crop_pad=crop_pad
             )
         if large.any():
+            # A feed-forward large backend (MAT/MI-GAN) takes no diffusion kwargs, so only
+            # forward `inpaint_kwargs` when the large leg is a diffusion backend.
+            large_kwargs = {} if _AUTO_LARGE_BACKEND in _FEEDFORWARD else inpaint_kwargs
             result = _inpaint_region(
-                inpainter, result, large, "twostage", dilate, feather,
-                crop=crop, crop_pad=crop_pad, **inpaint_kwargs,
+                inpainter, result, large, _AUTO_LARGE_BACKEND, dilate, feather,
+                crop=crop, crop_pad=crop_pad, **large_kwargs,
             )
     else:
         result = _inpaint_region(

@@ -1,8 +1,11 @@
-"""Inpainting backends: LaMa (fast texture fill), SDXL, and FLUX.1 Fill (semantic fills).
+"""Inpainting backends: LaMa (fast texture fill), SDXL / FLUX.1 Fill (diffusion fills), and
+MI-GAN / MAT (fast feed-forward large-hole specialists).
 
 All are loaded lazily and kept resident once used. On a 16 GB card, run one backend at
 a time — SDXL and FLUX inpainting are enabled with model CPU offload so they fit comfortably
-(FLUX additionally loads a GGUF-quantized transformer).
+(FLUX additionally loads a GGUF-quantized transformer). MI-GAN and MAT are small pure-PyTorch
+generators (vendored under :mod:`deink.vendor`, no extra pip deps, un-gated weights that
+download lazily — override the URLs via ``DEINK_MIGAN_URL`` / ``DEINK_MAT_URL``).
 """
 
 from __future__ import annotations
@@ -41,6 +44,8 @@ class Inpainter:
         self._lama = None
         self._sdxl = None
         self._flux = None
+        self._migan = None
+        self._mat = None
 
     # --- lazy loaders -------------------------------------------------------
     def _load_lama(self):
@@ -95,6 +100,21 @@ class Inpainter:
             self._flux = pipe
         return self._flux
 
+    def _load_migan(self):
+        if self._migan is None:
+            from .vendor.migan import load_migan
+
+            self._migan = load_migan(self.device)
+        return self._migan
+
+    def _load_mat(self):
+        if self._mat is None:
+            from .vendor.mat import load_mat
+
+            # (generator, fixed latent z, null label, dtype) — reused across calls.
+            self._mat = load_mat(self.device)
+        return self._mat
+
     # --- backends -----------------------------------------------------------
     def inpaint_lama(self, image, mask) -> Image.Image:
         image = ensure_pil(image)
@@ -102,6 +122,44 @@ class Inpainter:
         lama = self._load_lama()
         result = lama(image, mask_img.convert("L"))
         return result.convert("RGB").resize(image.size)
+
+    def inpaint_migan(self, image, mask) -> Image.Image:
+        """MI-GAN feed-forward fill — fast, feed-forward, strong on large holes.
+
+        Like LaMa, this returns the raw filled window (no internal composite); the caller
+        (``pipeline._fill``) composites it back with the feathered mask so pixels outside
+        the mask stay bit-identical.
+        """
+        from .vendor.migan import migan_infer
+
+        image = ensure_pil(image)
+        mask_img = (
+            mask if isinstance(mask, Image.Image) else mask_to_pil(np.asarray(mask))
+        ).convert("L")
+        model = self._load_migan()
+        out = migan_infer(
+            model, np.asarray(image.convert("RGB")), np.asarray(mask_img), self.device
+        )
+        return Image.fromarray(out)
+
+    def inpaint_mat(self, image, mask, seed: int | None = None) -> Image.Image:
+        """MAT feed-forward fill — StyleGAN-based large-hole specialist.
+
+        ``seed`` redraws MAT's latent for a different plausible fill (default: the fixed
+        latent from load, so results are reproducible). Returns the raw filled window; the
+        caller composites (see :meth:`inpaint_migan`)."""
+        from .vendor.mat import mat_infer
+
+        image = ensure_pil(image)
+        mask_img = (
+            mask if isinstance(mask, Image.Image) else mask_to_pil(np.asarray(mask))
+        ).convert("L")
+        G, z, label, dtype = self._load_mat()
+        out = mat_infer(
+            G, z, label, dtype,
+            np.asarray(image.convert("RGB")), np.asarray(mask_img), self.device, seed=seed,
+        )
+        return Image.fromarray(out)
 
     def inpaint_sdxl(
         self,
@@ -235,6 +293,11 @@ class Inpainter:
             return self.inpaint_flux(image, mask, **kwargs)
         if backend == "twostage":
             return self.inpaint_twostage(image, mask, **kwargs)
+        if backend == "migan":
+            return self.inpaint_migan(image, mask)
+        if backend == "mat":
+            return self.inpaint_mat(image, mask, **kwargs)
         raise ValueError(
-            f"Unknown inpaint backend: {backend!r} (use 'lama', 'sdxl', 'flux', or 'twostage')"
+            f"Unknown inpaint backend: {backend!r} "
+            "(use 'lama', 'sdxl', 'flux', 'twostage', 'migan', or 'mat')"
         )

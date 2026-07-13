@@ -144,9 +144,11 @@ Notes:
   `"seg+box"`; loads a checkpoint trained by `scripts/train_tattooseg.py` (see Roadmap §1).
 - **`deink/inpaint.py`** — `Inpainter`: **LaMa** (fast, excellent skin-texture fill),
   **SDXL inpainting** (semantic fill for harder regions), **FLUX.1 Fill** (SOTA diffusion fill,
-  GGUF-quantized, gated base repo), and a **two-stage** fill (LaMa structure → low-strength SDXL
-  texture) for large regions. Models load lazily; SDXL and FLUX use model CPU offload to fit in
-  16 GB.
+  GGUF-quantized, gated base repo), a **two-stage** fill (LaMa structure → low-strength SDXL
+  texture) for large regions, and **MI-GAN** / **MAT** — fast **feed-forward** (non-diffusion)
+  large-hole GANs, vendored pure-PyTorch under `deink/vendor/` (no CUDA-ext build, no new deps;
+  un-gated weights auto-download). Models load lazily; SDXL and FLUX use model CPU offload to fit
+  in 16 GB.
 - **`deink/pipeline.py`** — `remove_tattoo`: orchestrates detect → segment → refine mask
   (dilate + feather) → inpaint → feathered composite at full resolution. Pixels outside the
   mask stay bit-identical to the input.
@@ -159,6 +161,8 @@ Notes:
 | `sdxl`  | slower (diffusion) | large/complex regions needing semantic fill |
 | `flux`  | slowest (12B diffusion) | best structure/texture — FLUX.1 Fill, GGUF-quantized; gated base repo (`hf auth login`) |
 | `twostage` | slowest (LaMa + diffusion) | large/limb-spanning holes — LaMa structure then a low-strength (0.5) SDXL texture pass, coherent limbs without the plastic look |
+| `migan` | fast (feed-forward) | opt-in feed-forward GAN fill; **Places2 scene weights** — fast but can hallucinate on skin, so not the `auto` default |
+| `mat`   | fast (feed-forward) | opt-in feed-forward StyleGAN fill; same Places2-domain caveat as `migan` |
 | `auto`  | per-region | mixed images — routes small blobs → LaMa, large/limb-spanning → two-stage |
 
 ## Roadmap / follow-ups
@@ -329,8 +333,22 @@ value-to-effort for exactly this large-region case.
     Next: FLUX Fill as the two-stage texture stage; benchmark vs. `twostage` on the deepest holes.
   - **PowerPaint** / **BrushNet** — diffusion inpainters with an explicit *object-removal* mode,
     designed for "remove this, fill plausibly."
-  - **MAT** / **MI-GAN** / **ZITS** — large-hole specialists, better than LaMa on big masks if you
-    want to stay feed-forward/fast.
+  - **MI-GAN** / **MAT** — ✅ *Implemented (`backend="migan"` / `backend="mat"`).* Fast
+    **feed-forward** (non-diffusion) large-hole specialists, better than LaMa on big masks while
+    staying fast. Both are pure-PyTorch (no CUDA-ext build) and **vendored** under
+    `deink/vendor/` (adapted from IOPaint) rather than added as a dep — `iopaint` pins
+    `diffusers==0.27.2`, which conflicts with the modern diffusers the FLUX backend needs. Weights
+    are **un-gated** GitHub-release assets that download lazily (override via `DEINK_MIGAN_URL` /
+    `DEINK_MAT_URL`) — no `hf auth login`. Both flow through the same crop-to-region + hard-mask
+    feathered composite as LaMa (`_NATIVE_RES = 512`); MAT is a fixed-512 StyleGAN net, MI-GAN a
+    TorchScript trace. Wired into the composable graph via `DeinkMiganBackend` / `DeinkMatBackend`.
+    **Caveat — they ship Places2 (scene) weights, not skin.** GPU-tested on the removal set they
+    remove tattoos on small masks but are softer than LaMa with minor artifacts, and on large holes
+    over a person they *hallucinate scene fragments*. So they stay **opt-in**: `backend="auto"`
+    keeps routing large/limb-spanning components to `twostage` (domain-appropriate). Flip
+    `_AUTO_LARGE_BACKEND` in `deink/pipeline.py` to `"mat"`/`"migan"` to trade quality for speed.
+    **ZITS** — a 4-model wireframe/edge/structure pipeline — remains a future item (most code for
+    least marginal gain once MI-GAN + MAT exist).
   - **ControlNet (pose/depth) guidance** or a **two-pass** LaMa-structure → diffusion-texture combo
     to keep reconstructed limbs anatomically correct.
 - **Mask refinement.** The default dilation was reduced 15 → 8 px (measured on the paired retouchme

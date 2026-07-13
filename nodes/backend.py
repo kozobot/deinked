@@ -10,9 +10,9 @@ node here (plus a case in ``deink.inpaint.Inpainter``); DeinkInpaint needs no ch
 ``DEINK_BACKEND`` is a custom ComfyUI link type: no registration is needed, only that producer
 ``RETURN_TYPES`` and consumer ``INPUT_TYPES`` use the same string. The descriptor schema is::
 
-    {"name": "lama" | "sdxl" | "flux" | "twostage",  # consumed by deink.pipeline._fill / Inpainter
+    {"name": "lama" | "sdxl" | "flux" | "twostage" | "migan" | "mat",  # deink.pipeline._fill / Inpainter
      "min_area_frac": float,     # route components >= this fraction of the image area here
-     "kwargs": {...}}            # backend-specific inpaint kwargs (empty for lama)
+     "kwargs": {...}}            # backend-specific inpaint kwargs (empty for lama/migan)
 """
 
 from __future__ import annotations
@@ -165,3 +165,58 @@ class DeinkTwoStageBackend:
         if seed is not None and seed >= 0:
             kwargs["seed"] = seed
         return ({"name": "twostage", "min_area_frac": min_area_frac, "kwargs": kwargs},)
+
+
+class DeinkMiganBackend:
+    """MI-GAN backend: fast feed-forward large-hole fill. No inpaint params to configure.
+
+    A small pure-PyTorch generator (no diffusion) that reconstructs across big holes faster
+    than the diffusion backends — a lightweight alternative to the two-stage/SDXL large tier.
+    Weights download lazily from an un-gated mirror on first use."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "min_area_frac": ("FLOAT", {"default": 0.02, "min": 0.0, "max": 1.0, "step": 0.005,
+                    "tooltip": "Route mask components >= this fraction of the image area to MI-GAN."}),
+            },
+        }
+
+    RETURN_TYPES = ("DEINK_BACKEND",)
+    RETURN_NAMES = ("backend",)
+    FUNCTION = "make"
+    CATEGORY = "deink"
+
+    def make(self, min_area_frac):
+        return ({"name": "migan", "min_area_frac": min_area_frac, "kwargs": {}},)
+
+
+class DeinkMatBackend:
+    """MAT backend: feed-forward StyleGAN large-hole specialist (deink's default ``auto`` large tier).
+
+    Pure-PyTorch, no diffusion — reconstructs structure across limb-sized holes fast. ``seed``
+    redraws its latent for a different plausible fill (default: deterministic). Weights download
+    lazily from an un-gated mirror on first use."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "min_area_frac": ("FLOAT", {"default": 0.02, "min": 0.0, "max": 1.0, "step": 0.005,
+                    "tooltip": "Route mask components >= this fraction of the image area to MAT."}),
+                "seed": ("INT", {"default": -1, "min": -1, "max": 0xFFFFFFFFFFFFFFFF,
+                    "tooltip": "-1 = deterministic (fixed latent)."}),
+            },
+        }
+
+    RETURN_TYPES = ("DEINK_BACKEND",)
+    RETURN_NAMES = ("backend",)
+    FUNCTION = "make"
+    CATEGORY = "deink"
+
+    def make(self, min_area_frac, seed):
+        kwargs = {}
+        if seed is not None and seed >= 0:
+            kwargs["seed"] = seed
+        return ({"name": "mat", "min_area_frac": min_area_frac, "kwargs": kwargs},)
