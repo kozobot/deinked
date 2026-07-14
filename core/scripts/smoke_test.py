@@ -55,6 +55,12 @@ def main():
     ap.add_argument("--max-area-frac", type=float, default=0.25,
                     help="drop detection boxes larger than this fraction of the image")
     ap.add_argument("--tile", action="store_true", help="tiled detection (higher recall, slower)")
+    ap.add_argument("--adaptive-dilate", action="store_true",
+                    help="scale mask dilation per component to its size")
+    ap.add_argument("--edge-feather", action="store_true",
+                    help="image-guided feather that follows the limb/ink contour")
+    ap.add_argument("--harmonize", action="store_true",
+                    help="color-match the fill to surrounding skin + Poisson seam")
     ap.add_argument("--detector", default="gdino", choices=["gdino", "owlv2", "ensemble"],
                     help="open-vocab detector: gdino (default), owlv2, or ensemble (both, ~2x slower)")
     ap.add_argument("--localizer", default="box", choices=["box", "seg", "seg+box"],
@@ -84,6 +90,9 @@ def main():
         max_area_frac=args.max_area_frac,
         tile=args.tile,
         auto_area_frac=args.auto_area_frac,
+        adaptive_dilate=args.adaptive_dilate,
+        edge_feather=args.edge_feather,
+        harmonize=args.harmonize,
     )
     dt = time.time() - t0
     print(f"found tattoo: {res.found}   elapsed: {dt:.1f}s")

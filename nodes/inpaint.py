@@ -42,6 +42,9 @@ class DeinkInpaint:
                           "tooltip": "Inpaint a native-res window around the mask (recommended)."}),
                 "crop_pad": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 4.0, "step": 0.1,
                              "tooltip": "Context around the mask, as a fraction of its extent."}),
+                "harmonize": ("BOOLEAN", {"default": False,
+                              "tooltip": "Color-match the fill to surrounding skin and Poisson-blend "
+                                         "the seam, to kill the halo/lighting patch on large fills."}),
             },
             "optional": {
                 "backend_1": ("DEINK_BACKEND", {
@@ -57,7 +60,8 @@ class DeinkInpaint:
     FUNCTION = "inpaint"
     CATEGORY = "deink"
 
-    def inpaint(self, image, mask, crop, crop_pad, backend_1=None, backend_2=None, backend_3=None):
+    def inpaint(self, image, mask, crop, crop_pad, harmonize=False,
+                backend_1=None, backend_2=None, backend_3=None):
         from deink.pipeline import _NATIVE_RES, _fill, _region_bbox, _route_by_component_size
 
         pil = tensor_to_pil(image)
@@ -80,11 +84,12 @@ class DeinkInpaint:
                                    min_size=_NATIVE_RES.get(be, 0))
                 if box is not None and box != (0, 0, img.size[0], img.size[1]):
                     l, t, r, b = box
-                    filled = _fill(inpainter, img.crop(box), region[t:b, l:r], be, **kw)
+                    filled = _fill(inpainter, img.crop(box), region[t:b, l:r], be,
+                                   harmonize=harmonize, **kw)
                     out = img.copy()
                     out.paste(filled, box)
                     return out
-            return _fill(inpainter, img, region, be, **kw)
+            return _fill(inpainter, img, region, be, harmonize=harmonize, **kw)
 
         binary = refined > 0.5
         parts = _route_by_component_size(

@@ -104,6 +104,9 @@ def _(localizer_choices, localizer_default, mo, seg_available):
     tile = mo.ui.checkbox(value=False, label="Tile detect (slower, better recall)")
     dilate = mo.ui.slider(0, 40, value=8, label="Mask grow (px)")
     feather = mo.ui.slider(0, 25, value=5, label="Feather (px)")
+    adaptive_dilate = mo.ui.checkbox(value=False, label="Adaptive grow (per-region)")
+    edge_feather = mo.ui.checkbox(value=False, label="Edge-aware feather")
+    harmonize = mo.ui.checkbox(value=False, label="Harmonize seam (color + Poisson)")
     box_threshold = mo.ui.slider(0.0, 0.6, step=0.05, value=0.25, label="Box threshold")
     text_threshold = mo.ui.slider(0.0, 0.6, step=0.05, value=0.2, label="Text threshold")
     max_area_frac = mo.ui.slider(0.05, 1.0, step=0.05, value=0.25, label="Max box area frac")
@@ -116,6 +119,7 @@ def _(localizer_choices, localizer_default, mo, seg_available):
             mo.hstack([upload, mask_upload], justify="start"),
             mo.hstack([backend, localizer, detector, prompt, tile], justify="start"),
             mo.hstack([dilate, feather], justify="start"),
+            mo.hstack([adaptive_dilate, edge_feather, harmonize], justify="start"),
             mo.accordion(
                 {
                     "▸ Advanced detection (lower thresholds = more recall, more false positives)":
@@ -128,11 +132,14 @@ def _(localizer_choices, localizer_default, mo, seg_available):
     )
     controls
     return (
+        adaptive_dilate,
         backend,
         box_threshold,
         detector,
         dilate,
+        edge_feather,
         feather,
+        harmonize,
         localizer,
         mask_upload,
         max_area_frac,
@@ -148,11 +155,14 @@ def _(localizer_choices, localizer_default, mo, seg_available):
 @app.cell
 def _(
     Image,
+    adaptive_dilate,
     backend,
     box_threshold,
     detector,
     dilate,
+    edge_feather,
     feather,
+    harmonize,
     get_inpainter,
     get_mask_segmenter,
     get_segmenter,
@@ -193,6 +203,9 @@ def _(
         tile=tile.value,
         dilate=dilate.value,
         feather=feather.value,
+        adaptive_dilate=adaptive_dilate.value,
+        edge_feather=edge_feather.value,
+        harmonize=harmonize.value,
         box_threshold=box_threshold.value,
         text_threshold=text_threshold.value,
         max_area_frac=max_area_frac.value,

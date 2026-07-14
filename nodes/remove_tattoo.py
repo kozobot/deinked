@@ -34,6 +34,14 @@ class DeinkRemoveTattoo:
                 "seg_threshold": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "dilate": ("INT", {"default": 8, "min": 0, "max": 128, "step": 1}),
                 "feather": ("INT", {"default": 5, "min": 0, "max": 128, "step": 1}),
+                "adaptive_dilate": ("BOOLEAN", {"default": False,
+                                    "tooltip": "Scale dilation per mask component to its size "
+                                               "(more grow on bold sleeves, less on tiny script)."}),
+                "edge_feather": ("BOOLEAN", {"default": False,
+                                 "tooltip": "Image-guided feather that follows the limb/ink contour."}),
+                "harmonize": ("BOOLEAN", {"default": False,
+                              "tooltip": "Color-match the fill to surrounding skin + Poisson seam "
+                                         "to kill the halo/lighting patch on large fills."}),
                 "crop": ("BOOLEAN", {"default": True}),
                 "crop_pad": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 4.0, "step": 0.1}),
                 "detector": (["gdino", "owlv2", "ensemble"], {"default": "gdino",
@@ -53,7 +61,8 @@ class DeinkRemoveTattoo:
     CATEGORY = "deink"
 
     def run(self, image, backend, localizer, mask=None, prompt="a tattoo.", seg_threshold=0.5,
-            dilate=8, feather=5, crop=True, crop_pad=0.5, detector="gdino", tile=False,
+            dilate=8, feather=5, adaptive_dilate=False, edge_feather=False, harmonize=False,
+            crop=True, crop_pad=0.5, detector="gdino", tile=False,
             box_threshold=0.25, text_threshold=0.2, max_area_frac=0.25):
         from deink.pipeline import remove_tattoo
 
@@ -71,6 +80,9 @@ class DeinkRemoveTattoo:
             seg_threshold=seg_threshold,
             dilate=dilate,
             feather=feather,
+            adaptive_dilate=adaptive_dilate,
+            edge_feather=edge_feather,
+            harmonize=harmonize,
             crop=crop,
             crop_pad=crop_pad,
             detector=detector,
