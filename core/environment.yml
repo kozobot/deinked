@@ -19,8 +19,11 @@ dependencies:
       - torch
       - torchvision
       # --- Foundation models: detection + segmentation + inpainting ---
-      - transformers>=4.44        # GroundingDINO + SAM live here (no CUDA-ext build)
-      - diffusers>=0.32           # SDXL + FLUX.1 Fill inpainting pipelines (GGUF-aware)
+      - transformers>=4.44        # GroundingDINO + SAM + depth estimation live here (no CUDA-ext)
+      - diffusers>=0.32           # SDXL / SDXL+ControlNet / FLUX.1 Fill inpainting pipelines (GGUF-aware)
+      # The "sdxl_controlnet" backend needs no new package — its SDXL depth ControlNet
+      # (diffusers/controlnet-depth-sdxl-1.0-small) and depth model (Depth-Anything-V2-Small) are
+      # un-gated weights that download lazily on first use (no `hf auth`).
       - accelerate
       - safetensors
       - gguf                      # GGUF-quantized FLUX.1 Fill transformer loader

@@ -38,6 +38,17 @@
   login` and accept the license before the first run, which also downloads the GGUF + text
   encoders/VAE (slow first run). Same SegFormer-`seg` defaults and checkpoint requirement as the
   composable graph.
+- **`controlnet.json`** — the `flux.json` graph with the large-region backend swapped for a
+  **`Deink SDXL Depth ControlNet Backend`** (`min_area_frac=0.02`, `controlnet_conditioning_scale=0.5`,
+  the rest matching the SDXL backend): large / limb-spanning mask components get SDXL guided by an
+  auto-estimated **depth map of the surrounding limb**, so the fill follows the real arm/leg geometry
+  instead of the flat/warped anatomy plain SDXL invents across a big hole; small components still
+  route to the `Deink LaMa Backend`. Unlike FLUX the weights are **un-gated** — no `hf auth`: the
+  small SDXL depth ControlNet (`diffusers/controlnet-depth-sdxl-1.0-small`) and the depth model
+  (`depth-anything/Depth-Anything-V2-Small-hf`) download lazily on first use (alongside the SDXL
+  inpaint base, ~6.5 GB, so the first run is slow). Raise `controlnet_conditioning_scale` to hold the
+  depth structure harder. Same SegFormer-`seg` defaults and checkpoint requirement as the composable
+  graph.
 - **`two_stage_segbox.json`** — the highest-recall two-stage path, built on the all-in-one
   **`Deink Remove Tattoo`** node: `localizer=seg+box` (SegFormer **∪** GroundingDINO+SAM box path,
   for max detection recall), `backend=auto` (small blobs → LaMa, large/limb-spanning → two-stage),

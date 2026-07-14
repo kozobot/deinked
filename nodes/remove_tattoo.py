@@ -22,8 +22,8 @@ class DeinkRemoveTattoo:
         return {
             "required": {
                 "image": ("IMAGE",),
-                "backend": (["lama", "sdxl", "flux", "auto", "twostage", "migan", "mat"],
-                            {"default": "auto"}),
+                "backend": (["lama", "sdxl", "sdxl_controlnet", "flux", "auto", "twostage",
+                             "migan", "mat"], {"default": "auto"}),
                 "localizer": (["seg", "box", "seg+box"], {"default": "seg"}),
             },
             "optional": {

@@ -6,6 +6,7 @@ from .backend import (
     DeinkMatBackend,
     DeinkMiganBackend,
     DeinkSdxlBackend,
+    DeinkSdxlControlNetBackend,
     DeinkTwoStageBackend,
 )
 from .inpaint import DeinkInpaint
@@ -23,6 +24,7 @@ __all__ = [
     "DeinkRefineMask",
     "DeinkRemoveTattoo",
     "DeinkSdxlBackend",
+    "DeinkSdxlControlNetBackend",
     "DeinkSegFormer",
     "DeinkSplitMaskBySize",
     "DeinkTwoStageBackend",
