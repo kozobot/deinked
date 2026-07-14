@@ -10,7 +10,7 @@ node here (plus a case in ``deink.inpaint.Inpainter``); DeinkInpaint needs no ch
 ``DEINK_BACKEND`` is a custom ComfyUI link type: no registration is needed, only that producer
 ``RETURN_TYPES`` and consumer ``INPUT_TYPES`` use the same string. The descriptor schema is::
 
-    {"name": "lama" | "sdxl" | "flux" | "twostage" | "migan" | "mat",  # deink.pipeline._fill / Inpainter
+    {"name": "lama" | "sdxl" | "sdxl_controlnet" | "flux" | "twostage" | "migan" | "mat",  # Inpainter
      "min_area_frac": float,     # route components >= this fraction of the image area here
      "kwargs": {...}}            # backend-specific inpaint kwargs (empty for lama/migan)
 """
@@ -77,6 +77,56 @@ class DeinkSdxlBackend:
         if seed is not None and seed >= 0:
             kwargs["seed"] = seed
         return ({"name": "sdxl", "min_area_frac": min_area_frac, "kwargs": kwargs},)
+
+
+class DeinkSdxlControlNetBackend:
+    """SDXL + depth-ControlNet backend: SDXL guided by a depth map of the surrounding limb.
+
+    A depth map is auto-estimated (Depth-Anything, transformers-native) from the crop and fed to
+    an SDXL depth ControlNet so the generated skin follows the actual arm/leg geometry across the
+    hole — curing the flat/warped anatomy plain SDXL invents on a limb-sized mask. Same params as
+    the SDXL backend plus ``controlnet_conditioning_scale`` (how hard to hold the depth structure).
+    Best wired for large / limb-spanning regions. Weights (small SDXL depth CN + depth model)
+    download lazily from un-gated mirrors — no `hf auth login`."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "min_area_frac": ("FLOAT", {"default": 0.02, "min": 0.0, "max": 1.0, "step": 0.005,
+                    "tooltip": "Route mask components >= this fraction of the image area here."}),
+                "prompt": ("STRING", {"default": "", "multiline": True,
+                    "tooltip": "Blank uses deink's skin default."}),
+                "negative_prompt": ("STRING", {"default": "", "multiline": True}),
+                "strength": ("FLOAT", {"default": 0.99, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "guidance_scale": ("FLOAT", {"default": 8.0, "min": 0.0, "max": 30.0, "step": 0.5}),
+                "steps": ("INT", {"default": 30, "min": 1, "max": 150, "step": 1}),
+                "controlnet_conditioning_scale": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 2.0,
+                    "step": 0.05, "tooltip": "How hard to hold the depth structure (higher = more)."}),
+                "seed": ("INT", {"default": -1, "min": -1, "max": 0xFFFFFFFFFFFFFFFF,
+                    "tooltip": "-1 = random."}),
+            },
+        }
+
+    RETURN_TYPES = ("DEINK_BACKEND",)
+    RETURN_NAMES = ("backend",)
+    FUNCTION = "make"
+    CATEGORY = "deink"
+
+    def make(self, min_area_frac, prompt, negative_prompt, strength, guidance_scale, steps,
+             controlnet_conditioning_scale, seed):
+        # Same kwargs assembly as the SDXL backend, plus the ControlNet conditioning scale that
+        # flows to deink's inpaint_sdxl_controlnet.
+        kwargs = {"strength": strength, "guidance_scale": guidance_scale,
+                  "num_inference_steps": steps,
+                  "controlnet_conditioning_scale": controlnet_conditioning_scale}
+        if prompt:
+            kwargs["prompt"] = prompt
+        if negative_prompt:
+            kwargs["negative_prompt"] = negative_prompt
+        if seed is not None and seed >= 0:
+            kwargs["seed"] = seed
+        return ({"name": "sdxl_controlnet", "min_area_frac": min_area_frac, "kwargs": kwargs},)
 
 
 class DeinkFluxBackend:

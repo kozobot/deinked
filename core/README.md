@@ -315,8 +315,22 @@ value-to-effort for exactly this large-region case.
 - **Guide the diffusion fill.** (a) **Prompt/negative-prompt** in `deink/inpaint.py`: describe the
   target ("bare skin, natural skin texture, even lighting, muscle") and negative-prompt the source
   ("tattoo, ink, text, lettering") so the model doesn't re-hallucinate ink — a common large-tattoo
-  artifact. (b) **ControlNet (depth/pose)** or an **IP-Adapter** skin reference to hold limb shape
-  and skin tone across the hole.
+  artifact. (b) **ControlNet (depth) guidance.** ✅ *Implemented (`backend="sdxl_controlnet"`).* A
+  depth map of the surrounding limb is auto-estimated from the crop (Depth-Anything V2, transformers-
+  native — no CUDA-ext build, no new pip dep, same discipline as OWLv2 over YOLO-World) and fed to an
+  SDXL depth ControlNet, so the generated skin follows the actual arm/leg volume across the hole
+  instead of the flat/warped anatomy plain SDXL invents on a limb-sized mask. `inpaint_sdxl_controlnet`
+  mirrors `inpaint_sdxl` exactly (run square @1024, resize back, composite on the mask →
+  bit-identical outside it) and flows through the same crop-to-region seam
+  (`_NATIVE_RES["sdxl_controlnet"] = 1024`) — the depth is estimated *inside* the method from the
+  already-cropped window, so nothing extra threads through `_fill`/`remove_tattoo`. Model ids are
+  `diffusers/controlnet-depth-sdxl-1.0-small` and `depth-anything/Depth-Anything-V2-Small-hf` (both
+  **un-gated** — no `hf auth`), overridable via `DEINK_SDXL_CN_DEPTH` / `DEINK_DEPTH_MODEL`;
+  `controlnet_conditioning_scale` (default 0.5) trades depth adherence against fill freedom.
+  Selectable on `remove_tattoo`, the app dropdown, `scripts/smoke_test.py`, and the all-in-one node;
+  wired into the composable graph via `DeinkSdxlControlNetBackend`. **Pose (OpenPose/DWpose) and an
+  IP-Adapter skin reference** remain future items — pose would need a new dep (`controlnet_aux`),
+  which the pipeline avoids.
 - **Tune SDXL.** Now validated end-to-end; tune `strength`, `guidance_scale`, steps, and the skin
   prompt in `deink/inpaint.py`. LaMa wins on speed and plain skin; SDXL wins on large/curved
   regions and areas crossing anatomical boundaries. For removal, keep `strength` high enough to
@@ -349,8 +363,9 @@ value-to-effort for exactly this large-region case.
     `_AUTO_LARGE_BACKEND` in `deink/pipeline.py` to `"mat"`/`"migan"` to trade quality for speed.
     **ZITS** — a 4-model wireframe/edge/structure pipeline — remains a future item (most code for
     least marginal gain once MI-GAN + MAT exist).
-  - **ControlNet (pose/depth) guidance** or a **two-pass** LaMa-structure → diffusion-texture combo
-    to keep reconstructed limbs anatomically correct.
+  - **ControlNet guidance** — ✅ *depth implemented (`backend="sdxl_controlnet"`, see "Guide the
+    diffusion fill" above)*; pose remains a future item (needs `controlnet_aux`). The **two-pass**
+    LaMa-structure → diffusion-texture combo is also shipped as `backend="twostage"`.
 - **Mask refinement.** The default dilation was reduced 15 → 8 px (measured on the paired retouchme
   data: ~38% less clean-skin over-paint — the main "blur" source — at negligible recall cost).
   Remaining, and directly relevant to large-tattoo artifacts:

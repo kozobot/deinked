@@ -44,10 +44,11 @@ pip install -r deinked/requirements.txt
 | **Deink Split Mask by Size** | MASK → MASK, MASK | Split components into `small` / `large` by area, to route each to a different inpainter. |
 | **Deink LaMa Backend** | → DEINK_BACKEND | Configures a LaMa backend (just a `min_area_frac` routing threshold); wire into Deink Inpaint. |
 | **Deink SDXL Backend** | → DEINK_BACKEND | Configures an SDXL backend (prompt, strength, steps, seed, …) + its `min_area_frac`; wire into Deink Inpaint. |
+| **Deink SDXL Depth ControlNet Backend** | → DEINK_BACKEND | SDXL guided by an auto-estimated depth map of the surrounding limb, so the fill follows real arm/leg geometry across large holes. Same params as the SDXL backend + `controlnet_conditioning_scale` and its `min_area_frac`. Un-gated weights download lazily (no `hf auth`). Wire into Deink Inpaint. |
 | **Deink FLUX Fill Backend** | → DEINK_BACKEND | Configures a FLUX.1 Fill backend (SOTA diffusion, GGUF-quantized; prompt, guidance, steps, strength, seed) + its `min_area_frac`. Gated base repo — `hf auth login` first. Wire into Deink Inpaint. |
 | **Deink Two-Stage Backend** | → DEINK_BACKEND | LaMa structure pass → low-strength (0.5) SDXL texture pass, for large/limb-spanning holes (coherent limbs without the plastic look). Same params as the SDXL backend + its `min_area_frac`; wire into Deink Inpaint. |
 | **Deink Inpaint** | IMAGE + MASK (+ DEINK_BACKEND…) → IMAGE | Runs at the backend's *native resolution* (crop-to-region), compositing so pixels outside the mask stay bit-identical. Wire one or more backend nodes into its `backend_*` sockets; it auto-routes each mask component to the backend matching its size (falls back to a plain LaMa fill if none wired). Treats the mask as final — refine it upstream. |
-| **Deink Remove Tattoo** | IMAGE → IMAGE, MASK | All-in-one: the whole pipeline in one node (defaults to the SegFormer localizer; keeps its own `backend` = `lama`/`sdxl`/`auto`/`twostage` knob). |
+| **Deink Remove Tattoo** | IMAGE → IMAGE, MASK | All-in-one: the whole pipeline in one node (defaults to the SegFormer localizer; keeps its own `backend` = `lama`/`sdxl`/`sdxl_controlnet`/`flux`/`auto`/`twostage`/`migan`/`mat` knob). |
 
 ## Typical graphs
 

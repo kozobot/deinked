@@ -52,9 +52,11 @@ def refine_mask(mask: np.ndarray, dilate: int = 8, feather: int = 5) -> np.ndarr
 # small tattoo is fed a crop of *real* pixels around it rather than an upscaled thumbnail.
 # SDXL always runs at 1024 internally; LaMa is fully convolutional (no fixed size), so 0.
 # "twostage" ends in an SDXL pass, so it wants the same 1024 native window. FLUX Fill also runs
-# square at 1024, so it wants the same window. MI-GAN and MAT are 512px generators.
+# square at 1024, so it wants the same window. "sdxl_controlnet" is SDXL under the hood (1024).
+# MI-GAN and MAT are 512px generators.
 _NATIVE_RES = {
-    "sdxl": 1024, "lama": 0, "twostage": 1024, "flux": 1024, "migan": 512, "mat": 512
+    "sdxl": 1024, "sdxl_controlnet": 1024, "lama": 0, "twostage": 1024, "flux": 1024,
+    "migan": 512, "mat": 512,
 }
 
 # Feed-forward backends that fill a hard binary hole (no diffusion, no text kwargs) — routed
@@ -265,7 +267,9 @@ def remove_tattoo(
     detection time). ``None`` uses the segmenter's own default.
 
     ``backend`` selects the inpaint fill: ``"lama"`` (fast feed-forward texture fill),
-    ``"sdxl"`` (diffusion, reconstructs structure across large holes), ``"flux"`` (FLUX.1 Fill —
+    ``"sdxl"`` (diffusion, reconstructs structure across large holes), ``"sdxl_controlnet"``
+    (SDXL guided by a depth map of the surrounding limb, so the fill follows the actual arm/leg
+    geometry — best on large/limb-spanning holes), ``"flux"`` (FLUX.1 Fill —
     SOTA diffusion inpainter, stronger structure/texture than SDXL; GGUF-quantized, gated base
     repo), ``"twostage"`` (LaMa roughs in structure, then a low-strength SDXL pass adds skin
     texture over it — coherent limbs without the plastic look of a single high-strength pass), or

@@ -21,20 +21,23 @@ root `__init__.py`) and **imports the canonical `deink` code** — there is no v
   `convert.py` (IMAGE/MASK tensor ↔ PIL/numpy), `models.py` (cached model singletons),
   `nodes/*.py` (the node classes), `pyproject.toml` (`[tool.comfy]`), `example_workflows/`.
 - Nodes: `DeinkSegFormer`, `DeinkRefineMask`, `DeinkSplitMaskBySize`, `DeinkLamaBackend`,
-  `DeinkSdxlBackend`, `DeinkFluxBackend`, `DeinkTwoStageBackend`, `DeinkMiganBackend`,
-  `DeinkMatBackend`, `DeinkInpaint`, `DeinkRemoveTattoo`. Box localization
+  `DeinkSdxlBackend`, `DeinkSdxlControlNetBackend`, `DeinkFluxBackend`, `DeinkTwoStageBackend`,
+  `DeinkMiganBackend`, `DeinkMatBackend`, `DeinkInpaint`, `DeinkRemoveTattoo`. Box localization
   reuses the commodity
   `comfyui_segment_anything` node (interop via the `MASK` type, not imported); we own `DeinkInpaint`
   so crop-to-native + bit-identical composite wrap the backend. `DeinkInpaint` treats its input mask
   as *final* (refine upstream with `DeinkRefineMask`; it does not re-refine).
   - **Backend as a wired input (`nodes/backend.py`):** `DeinkInpaint` has **no `backend` combo**.
-    Instead `DeinkLamaBackend` / `DeinkSdxlBackend` / `DeinkFluxBackend` / `DeinkTwoStageBackend`
-    / `DeinkMiganBackend` / `DeinkMatBackend` are provider nodes that emit a custom `DEINK_BACKEND`
-    descriptor (`{"name", "min_area_frac", "kwargs"}`) into `DeinkInpaint`'s optional `backend_1..3`
-    sockets; SDXL params (prompt/strength/steps/seed/…) live on the SDXL / two-stage providers (the
-    two-stage provider defaults `strength` to 0.5 — its params configure the SDXL texture stage);
-    the FLUX provider is the same minus `negative_prompt` (FLUX is guidance-distilled) with
-    `guidance_scale` defaulting to ~30. The **MI-GAN / MAT providers are feed-forward** — MI-GAN has
+    Instead `DeinkLamaBackend` / `DeinkSdxlBackend` / `DeinkSdxlControlNetBackend` / `DeinkFluxBackend`
+    / `DeinkTwoStageBackend` / `DeinkMiganBackend` / `DeinkMatBackend` are provider nodes that emit a
+    custom `DEINK_BACKEND` descriptor (`{"name", "min_area_frac", "kwargs"}`) into `DeinkInpaint`'s
+    optional `backend_1..3` sockets; SDXL params (prompt/strength/steps/seed/…) live on the SDXL /
+    two-stage providers (the two-stage provider defaults `strength` to 0.5 — its params configure the
+    SDXL texture stage); the **SDXL depth-ControlNet provider** is the SDXL provider plus a
+    `controlnet_conditioning_scale` (it guides the fill with an auto-estimated depth map of the
+    surrounding limb); the FLUX provider is the same minus `negative_prompt` (FLUX is
+    guidance-distilled) with `guidance_scale` defaulting to ~30. The **MI-GAN / MAT providers are
+    feed-forward** — MI-GAN has
     no params, MAT exposes only an optional `seed` (redraws its latent). `DeinkInpaint` auto-routes
     each connected mask component to the wired backend whose `min_area_frac` best matches the
     component's image-area fraction, via `deink.pipeline._route_by_component_size` (the N-tier
@@ -42,7 +45,7 @@ root `__init__.py`) and **imports the canonical `deink` code** — there is no v
     reproduces the old plain-SDXL `backend="auto"` (which routes large regions to `twostage` — wire
     a `DeinkTwoStageBackend` in place of the SDXL provider to match current `auto`). No backend
     wired → a plain LaMa fill (standalone default). `DeinkRemoveTattoo` (all-in-one) keeps its own
-    `backend` = `lama`/`sdxl`/`flux`/`auto`/`twostage`/`migan`/`mat` string knob.
+    `backend` = `lama`/`sdxl`/`sdxl_controlnet`/`flux`/`auto`/`twostage`/`migan`/`mat` string knob.
 - **Training is out of scope for ComfyUI** and stays as offline scripts in `core/scripts/`; the
   plugin only *consumes* the SegFormer checkpoint at `core/data/models/tattoo-segformer/`.
 
@@ -121,7 +124,12 @@ below. Both produce a `bool (H,W)` mask that flows into the same refine→inpain
 - **`deink/inpaint.py`** — `Inpainter`. Backends: `"lama"` (simple-lama-inpainting,
   fast, strong skin-texture fill), `"sdxl"` (`diffusers` `AutoPipelineForInpainting` with
   `diffusers/stable-diffusion-xl-1.0-inpainting-0.1`, runs at 1024px with model CPU offload,
-  composited back at native size), `"flux"` (`inpaint_flux`: `diffusers` `FluxFillPipeline` on
+  composited back at native size), `"sdxl_controlnet"` (`inpaint_sdxl_controlnet`: the same SDXL
+  inpaint base wrapped in a `StableDiffusionXLControlNetInpaintPipeline` + `diffusers/controlnet-
+  depth-sdxl-1.0-small`, guided by a depth map auto-estimated from the crop with a transformers-
+  native `AutoModelForDepthEstimation` — `depth-anything/Depth-Anything-V2-Small-hf`, no CUDA-ext /
+  no new pip dep; both un-gated, `DEINK_SDXL_CN_DEPTH` / `DEINK_DEPTH_MODEL`-overridable; holds limb
+  geometry across the hole, `controlnet_conditioning_scale` default 0.5), `"flux"` (`inpaint_flux`: `diffusers` `FluxFillPipeline` on
   `black-forest-labs/FLUX.1-Fill-dev` — SOTA fill, better structure/texture than SDXL; the 12B
   transformer is loaded **GGUF-quantized** via `FluxTransformer2DModel.from_single_file` +
   `GGUFQuantizationConfig` — `FLUX_GGUF_URL`, `DEINK_FLUX_GGUF`-overridable — so it fits 16 GB under
@@ -137,7 +145,7 @@ below. Both produce a `bool (H,W)` mask that flows into the same refine→inpain
   (`DEINK_MIGAN_URL` / `DEINK_MAT_URL`); MI-GAN is a TorchScript trace, MAT a fixed-512 StyleGAN
   state-dict. Like LaMa they fill a hard binary hole and are composited back by `_fill`
   (`_NATIVE_RES = 512`). Models load lazily and stay resident; two-stage adds no new model.
-  `inpaint(..., backend=...)` dispatches all six.
+  `inpaint(..., backend=...)` dispatches all seven.
 - **`deink/pipeline.py`** — `remove_tattoo(image, backend=..., mask=None, dilate=8,
   feather=5, ...) -> RemovalResult`. Pass a `mask` to skip detection (interactive path).
   `refine_mask` dilates (cover ink edges) and feathers (seamless blend). Returns `.image`,
