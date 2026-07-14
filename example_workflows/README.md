@@ -69,6 +69,28 @@
   three `GroundingDino*` / `SAMModelLoader` nodes (install via Manager) plus a trained SegFormer
   checkpoint; without the pack ComfyUI flags those nodes as missing. Same recall/first-run notes
   as `two_stage_segbox.json`.
+- **`mask_refinement_composable.json`** — the `deinked_app_composable.json` graph with the three
+  **mask-refinement** knobs turned on, to demo the README §2 "Mask refinement" work. `Deink Refine
+  Mask` runs with `adaptive=true` (dilation scales per mask component to its size — more grow on
+  bold sleeves, less on thin script) and `edge_feather=true`, with **Load Image wired into its
+  optional `image` input** as the guide so the feather follows the limb/ink contour instead of a
+  uniform Gaussian ring. `Deink Inpaint` runs with `harmonize=true` (color-match the fill to
+  surrounding skin + `cv2.seamlessClone` Poisson seam, to kill the halo/lighting patch on large
+  fills). The large-region backend is a `Deink Two-Stage Backend` (`min_area_frac=0.02`), small
+  regions still route to `Deink LaMa Backend`. All three refinements are base-cv2 (no extra
+  downloads) and keep pixels outside the mask bit-identical. Same SegFormer-`seg` defaults and
+  checkpoint requirement as the composable graph. Install into `user/default/workflows/`.
+- **`controlnet_refined.json`** — an **A/B harness** for the mask-refinement work, on the *best*
+  backend so the comparison is apples-to-apples. It is the `controlnet.json` graph (large regions →
+  `Deink SDXL Depth ControlNet Backend`) with the three refinement knobs present but **off**, and
+  the Load Image already wired into `Deink Refine Mask`'s optional `image` guide (so `edge_feather`
+  works the moment you flip it). With everything off it is identical to `controlnet.json` — flip
+  **one** knob at a time and compare to that baseline: `adaptive` (per-region grow, capped modest at
+  `dilate_max=24` here so it doesn't over-paint), `edge_feather` (image-guided feather), or
+  `harmonize` on `Deink Inpaint` (skin color-match + Poisson seam). Do **not** compare against
+  `mask_refinement_composable.json` to judge these features — that graph also uses the weaker
+  Two-Stage backend and turns all three on at once, so it conflates the backend swap with the
+  refinements. Same SegFormer-`seg` defaults and checkpoint requirement as the composable graph.
 - **`segformer_path.json`** — self-contained, no commodity node needed:
   `Load Image → Deink SegFormer → Deink Refine Mask → Deink Inpaint → Save Image`, with a
   `Deink LaMa Backend` + `Deink SDXL Backend` pair feeding `Deink Inpaint`'s `backend_*` sockets

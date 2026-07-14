@@ -33,7 +33,7 @@ from PIL import Image
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from deink import Inpainter, TattooMaskSegmenter, TattooSegmenter
-from deink.pipeline import refine_mask
+from deink.pipeline import _fill, refine_mask
 
 IGNORE = 255
 
@@ -85,6 +85,12 @@ def main():
     ap.add_argument("--methods", nargs="+", default=["gdino", "ensemble+tile"],
                     choices=list(METHODS))
     ap.add_argument("--downstream", action="store_true", help="inpaint + PSNR-to-clean (slower)")
+    ap.add_argument("--adaptive-dilate", action="store_true",
+                    help="downstream A/B: per-region adaptive dilation")
+    ap.add_argument("--edge-feather", action="store_true",
+                    help="downstream A/B: image-guided (edge-aware) feather")
+    ap.add_argument("--harmonize", action="store_true",
+                    help="downstream A/B: skin color-match + Poisson seam")
     ap.add_argument("--limit", type=int, default=None)
     args = ap.parse_args()
 
@@ -115,10 +121,13 @@ def main():
             agg[m]["recall"].append(recall)
             agg[m]["prec"].append(prec)
             if args.downstream and pred.any():
-                refined = refine_mask(pred)
-                hard = Image.fromarray((refined > 0.5).astype(np.uint8) * 255, "L")
-                out = inpainter.inpaint(image, hard, backend="lama")
-                out = Image.composite(out, image, Image.fromarray((refined * 255).astype(np.uint8), "L"))
+                # Route through the shared refine + _fill seam so the A/B toggles exercise the
+                # real mask-refinement code path (adaptive dilation, edge-aware feather,
+                # harmonize) on the LaMa fill — same math the diffusion backends hit.
+                guide = np.asarray(image) if args.edge_feather else None
+                refined = refine_mask(pred, adaptive=args.adaptive_dilate, guide=guide)
+                out = _fill(inpainter, image, refined, "lama",
+                            harmonize=args.harmonize, harmonize_kw={"ring_px": 8})
                 # score over the ground-truth tattoo region: did removal make it look clean?
                 region = (gt == 1)
                 pv = psnr(np.array(out), clean, region)

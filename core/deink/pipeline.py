@@ -27,7 +27,55 @@ class RemovalResult:
     found: bool             # whether any tattoo region was located
 
 
-def refine_mask(mask: np.ndarray, dilate: int = 8, feather: int = 5) -> np.ndarray:
+def _dilate_adaptive(binary: np.ndarray, dilate: int, dilate_grow: float, dilate_max: int) -> np.ndarray:
+    """Per-connected-component dilation scaled to each blob's size.
+
+    A thin script tattoo and a full sleeve share one global ``dilate``, but bold sleeve
+    linework needs more growth or its dark ink edges ghost through the fill as a halo. Each
+    component is grown by ``dilate_grow`` px per unit of its own equivalent radius
+    ``r_eq = sqrt(area/pi)``, floored at the global ``dilate`` (so coverage is a *superset* of
+    the uniform path — recall can't regress) and capped at ``dilate_max``. Keep the cap modest:
+    over-growing a large component over-paints clean skin, the dominant *blur* source on a
+    diffusion fill — a large cap makes a sleeve worse, not better. ``binary`` is a uint8 (H, W)
+    mask (0/255); returns the same dtype.
+    """
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(binary, 8)
+    out = np.zeros_like(binary)
+    for i in range(1, n):  # 0 is background
+        r_eq = (stats[i, cv2.CC_STAT_AREA] / np.pi) ** 0.5
+        d_c = int(np.clip(round(dilate_grow * r_eq), dilate, dilate_max))
+        comp = (labels == i).astype(np.uint8) * 255
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * d_c + 1, 2 * d_c + 1))
+        out = np.maximum(out, cv2.dilate(comp, k))
+    return out
+
+
+def _guided_filter(I: np.ndarray, p: np.ndarray, r: int, eps: float) -> np.ndarray:
+    """Edge-preserving smoothing of ``p`` guided by ``I`` (He et al. 2010), built from
+    ``cv2.boxFilter`` — base OpenCV, no ``ximgproc``/contrib. Filtering a hard mask ``p`` this
+    way yields a soft boundary that snaps to structure in the guide ``I`` (the limb/ink
+    contour) instead of a uniform ring. ``I``/``p`` are float32 (H, W) in [0, 1]."""
+    ksize = (2 * r + 1, 2 * r + 1)
+    box = lambda x: cv2.boxFilter(x, -1, ksize, normalize=True)  # noqa: E731
+    mean_I, mean_p = box(I), box(p)
+    cov = box(I * p) - mean_I * mean_p
+    var = box(I * I) - mean_I * mean_I
+    a = cov / (var + eps)
+    b = mean_p - a * mean_I
+    return box(a) * I + box(b)
+
+
+def refine_mask(
+    mask: np.ndarray,
+    dilate: int = 8,
+    feather: int = 5,
+    *,
+    adaptive: bool = False,
+    dilate_grow: float = 0.15,
+    dilate_max: int | None = None,
+    guide: np.ndarray | None = None,
+    guided_eps: float = 1e-3,
+) -> np.ndarray:
     """Grow the mask to fully cover ink edges, then feather for seamless blending.
 
     ``dilate`` defaults to 8 px: measured against the paired retouchme tattoo/clean data,
@@ -36,13 +84,34 @@ def refine_mask(mask: np.ndarray, dilate: int = 8, feather: int = 5) -> np.ndarr
     (recall vs. the artist-cleaned ground truth) barely moved. Bump it back up for tattoos
     with soft/faded edges.
 
+    ``adaptive`` scales dilation per connected component to its size (a few px for a tiny
+    tattoo, more for a sleeve) instead of one global ``dilate`` — see :func:`_dilate_adaptive`
+    (``dilate_grow`` px per unit equivalent radius, floored at ``dilate``, capped at
+    ``dilate_max``, default ``3*dilate`` — modest so it doesn't over-paint clean skin). ``guide``
+    (an RGB/gray image aligned with ``mask``)
+    switches the feather from a uniform Gaussian ring to an **edge-aware** guided filter, so the
+    soft boundary follows the limb/ink contour rather than bleeding across it; ``guided_eps``
+    trades edge adherence (smaller) against smoothness. With ``adaptive=False`` and ``guide=None``
+    the output is byte-identical to the original dilate+Gaussian path.
+
     Returns a float32 (H, W) mask in [0, 1].
     """
     m = (np.asarray(mask) > 0).astype(np.uint8) * 255
     if dilate > 0:
-        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * dilate + 1, 2 * dilate + 1))
-        m = cv2.dilate(m, k)
+        if adaptive:
+            m = _dilate_adaptive(m, dilate, dilate_grow, dilate_max or 3 * dilate)
+        else:
+            k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * dilate + 1, 2 * dilate + 1))
+            m = cv2.dilate(m, k)
     if feather > 0:
+        if guide is not None:
+            g = np.asarray(guide)
+            if g.ndim == 3:
+                g = cv2.cvtColor(g, cv2.COLOR_RGB2GRAY)
+            g = g.astype(np.float32) / 255.0
+            p = m.astype(np.float32) / 255.0
+            mf = _guided_filter(g, p, max(1, 2 * feather), guided_eps)
+            return np.clip(mf, 0.0, 1.0).astype(np.float32)
         ksize = 2 * feather + 1
         m = cv2.GaussianBlur(m, (ksize, ksize), 0)
     return m.astype(np.float32) / 255.0
@@ -111,23 +180,95 @@ def _region_bbox(
     return int(l), int(t), int(r), int(b)
 
 
+def _harmonize(
+    fill: Image.Image,
+    base: Image.Image,
+    refined: np.ndarray,
+    *,
+    color: bool = True,
+    poisson: bool = True,
+    ring_px: int = 8,
+    eps: float = 1e-6,
+) -> Image.Image:
+    """Color-match ``fill`` to the skin surrounding the hole and Poisson-blend the seam.
+
+    Even a good fill can leave a visible patch on a large region — a slight color/lighting
+    offset at the boundary. This (a) shifts the fill's LAB mean/std *inside* the mask to match a
+    ``ring_px``-wide band of real skin just *outside* it (Reinhard transfer) and (b) blends with
+    Poisson (``cv2.seamlessClone``) to kill the residual halo. It falls back to color-only (or
+    the raw fill) when the ring is empty or the geometry is degenerate for ``seamlessClone``
+    (mask touching the border / too small / cv2 error). The *caller* still runs the final
+    soft-mask composite, so pixels outside the mask stay bit-identical regardless of what
+    ``seamlessClone`` does internally.
+    """
+    hard = np.asarray(refined) > 0.5
+    if not hard.any():
+        return fill
+    base_np = np.asarray(base.convert("RGB"))
+    fill_np = np.asarray(fill.convert("RGB"))
+    out = fill_np
+
+    if color:
+        hard_u8 = hard.astype(np.uint8)
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * ring_px + 1, 2 * ring_px + 1))
+        grown = cv2.dilate(hard_u8, k) > 0
+        edge = cv2.dilate(hard_u8, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))) > 0
+        ring = grown & ~edge  # a band of real skin just outside the hole
+        if ring.sum() >= 50:
+            fill_lab = cv2.cvtColor(fill_np, cv2.COLOR_RGB2LAB).astype(np.float32)
+            base_lab = cv2.cvtColor(base_np, cv2.COLOR_RGB2LAB).astype(np.float32)
+            mu_r, sd_r = base_lab[ring].mean(0), base_lab[ring].std(0)
+            mu_f, sd_f = fill_lab[hard].mean(0), fill_lab[hard].std(0)
+            matched = (fill_lab - mu_f) * (sd_r / (sd_f + eps)) + mu_r
+            fill_lab[hard] = matched[hard]  # only touch inside the hole
+            out = cv2.cvtColor(np.clip(fill_lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
+
+    if poisson:
+        ys, xs = np.where(hard)
+        l, r, t, b = int(xs.min()), int(xs.max()), int(ys.min()), int(ys.max())
+        H, W = hard.shape
+        touches_border = l == 0 or t == 0 or r == W - 1 or b == H - 1
+        if hard.sum() >= 25 and (r - l) >= 3 and (b - t) >= 3 and not touches_border:
+            center = ((l + r) // 2, (t + b) // 2)
+            try:
+                out = cv2.seamlessClone(
+                    out, base_np, hard.astype(np.uint8) * 255, center, cv2.NORMAL_CLONE
+                )
+            except cv2.error:
+                pass
+    return Image.fromarray(out)
+
+
 def _fill(
     inpainter: Inpainter,
     image: Image.Image,
     refined: np.ndarray,
     backend: str,
+    harmonize: bool = False,
+    harmonize_kw: dict | None = None,
     **inpaint_kwargs,
 ) -> Image.Image:
     """Inpaint ``image`` where ``refined`` (float mask over ``image``) is set, compositing so
     pixels outside the mask stay bit-identical: the feed-forward backends (LaMa/MI-GAN/MAT)
     get a hard binary mask and are feathered back on; SDXL blends with the soft mask directly
-    (and composites internally)."""
+    (and composites internally). ``harmonize`` runs :func:`_harmonize` (skin color-match +
+    Poisson seam) over the fill before the final soft-mask composite; with ``harmonize=False``
+    the output is byte-identical to the original for both backend families."""
     refined_img = mask_to_pil(refined)
     if backend in _FEEDFORWARD:
         hard = mask_to_pil((refined > 0.5).astype(bool))
         result = inpainter.inpaint(image, hard, backend=backend, **inpaint_kwargs)
+        if harmonize:
+            result = _harmonize(result, image, refined, **(harmonize_kw or {}))
         return Image.composite(result, image, refined_img)
-    return inpainter.inpaint(image, refined_img, backend=backend, **inpaint_kwargs)
+    # Diffusion backends composite internally with the soft mask.
+    result = inpainter.inpaint(image, refined_img, backend=backend, **inpaint_kwargs)
+    if harmonize:
+        # ``result`` is already composited (inside=fill, outside=original); harmonize the fill
+        # and re-composite so pixels outside the mask stay bit-identical.
+        result = _harmonize(result, image, refined, **(harmonize_kw or {}))
+        return Image.composite(result, image, refined_img)
+    return result
 
 
 def _inpaint_region(
@@ -139,6 +280,13 @@ def _inpaint_region(
     feather: int,
     crop: bool = True,
     crop_pad: float = 0.5,
+    adaptive: bool = False,
+    dilate_grow: float = 0.15,
+    dilate_max: int | None = None,
+    edge_feather: bool = False,
+    guided_eps: float = 1e-3,
+    harmonize: bool = False,
+    harmonize_kw: dict | None = None,
     **inpaint_kwargs,
 ) -> Image.Image:
     """Refine ``raw`` (bool mask) and inpaint just those pixels with ``backend``.
@@ -149,19 +297,30 @@ def _inpaint_region(
     filled window is pasted back into a copy of ``image``; because ``_fill`` composites the
     crop against itself, pixels outside the mask are unchanged, so the full frame stays
     bit-identical outside the mask.
+
+    ``adaptive`` / ``edge_feather`` / ``harmonize`` engage the mask-refinement extras (per-region
+    dilation, guided-filter feather, skin color-match + Poisson seam); all default off, in which
+    case the behaviour is unchanged. The guide for ``edge_feather`` is the full ``image`` (the
+    refine runs at full-frame coordinates before the crop).
     """
-    refined = refine_mask(raw, dilate=dilate, feather=feather)
+    guide = np.asarray(image.convert("RGB")) if edge_feather else None
+    refined = refine_mask(
+        raw, dilate=dilate, feather=feather,
+        adaptive=adaptive, dilate_grow=dilate_grow, dilate_max=dilate_max,
+        guide=guide, guided_eps=guided_eps,
+    )
+    fill_kw = dict(harmonize=harmonize, harmonize_kw=harmonize_kw, **inpaint_kwargs)
     if crop:
         box = _region_bbox(
             refined, image.size, pad_frac=crop_pad, min_size=_NATIVE_RES.get(backend, 0)
         )
         if box is not None and box != (0, 0, image.size[0], image.size[1]):
             l, t, r, b = box
-            filled = _fill(inpainter, image.crop(box), refined[t:b, l:r], backend, **inpaint_kwargs)
+            filled = _fill(inpainter, image.crop(box), refined[t:b, l:r], backend, **fill_kw)
             out = image.copy()
             out.paste(filled, box)
             return out
-    return _fill(inpainter, image, refined, backend, **inpaint_kwargs)
+    return _fill(inpainter, image, refined, backend, **fill_kw)
 
 
 def _split_by_component_size(
@@ -237,6 +396,13 @@ def remove_tattoo(
     auto_area_frac: float = 0.02,
     crop: bool = True,
     crop_pad: float = 0.5,
+    adaptive_dilate: bool = False,
+    dilate_grow: float = 0.15,
+    dilate_max: int | None = None,
+    edge_feather: bool = False,
+    guided_eps: float = 1e-3,
+    harmonize: bool = False,
+    harmonize_ring: int = 8,
     **inpaint_kwargs,
 ) -> RemovalResult:
     """Remove tattoos from ``image``.
@@ -286,6 +452,13 @@ def remove_tattoo(
     SDXL sees it. ``crop_pad`` sets how much surrounding skin the window includes (fraction of
     the mask extent per side; 0.5 → ~2x context). Set ``crop=False`` to inpaint the full frame
     (the previous behaviour). The result outside the mask stays bit-identical either way.
+
+    Mask-refinement extras (all default off → unchanged output): ``adaptive_dilate`` scales
+    dilation per connected component to its size (``dilate_grow``/``dilate_max``); ``edge_feather``
+    replaces the uniform Gaussian feather with an image-guided one that follows the limb/ink
+    contour (``guided_eps``); ``harmonize`` color-matches the fill to surrounding skin and
+    Poisson-blends the seam (``harmonize_ring`` = width of the reference skin band). These reduce
+    ghost halos on bold ink and the visible patch a good fill can still leave on a large region.
     """
     image = ensure_pil(image)
     localizer = (localizer or "box").lower()
@@ -330,9 +503,22 @@ def remove_tattoo(
         )
 
     # 2. Refine the mask (dilate + feather). This drives the returned `.mask` and the
-    #    feathered composite; the per-backend passes below re-refine their own sub-masks.
-    refined = refine_mask(raw, dilate=dilate, feather=feather)
+    #    feathered composite; the per-backend passes below re-refine their own sub-masks. The
+    #    preview mask mirrors the adaptive/edge-aware refinement actually used (harmonize is
+    #    composite-time only, so it does not affect `.mask`).
+    refined = refine_mask(
+        raw, dilate=dilate, feather=feather,
+        adaptive=adaptive_dilate, dilate_grow=dilate_grow, dilate_max=dilate_max,
+        guide=np.asarray(image.convert("RGB")) if edge_feather else None, guided_eps=guided_eps,
+    )
     refined_img = mask_to_pil(refined)
+
+    # Shared mask-refinement knobs forwarded to every per-region pass (all default off).
+    refine_kw = dict(
+        adaptive=adaptive_dilate, dilate_grow=dilate_grow, dilate_max=dilate_max,
+        edge_feather=edge_feather, guided_eps=guided_eps,
+        harmonize=harmonize, harmonize_kw={"ring_px": harmonize_ring} if harmonize else None,
+    )
 
     # 3. Inpaint. "auto" routes each connected mask component to the backend that fits its
     #    size (small -> LaMa, large -> `_AUTO_LARGE_BACKEND`, default two-stage); the named
@@ -344,7 +530,8 @@ def remove_tattoo(
         result = image
         if small.any():
             result = _inpaint_region(
-                inpainter, result, small, "lama", dilate, feather, crop=crop, crop_pad=crop_pad
+                inpainter, result, small, "lama", dilate, feather,
+                crop=crop, crop_pad=crop_pad, **refine_kw,
             )
         if large.any():
             # A feed-forward large backend (MAT/MI-GAN) takes no diffusion kwargs, so only
@@ -352,12 +539,12 @@ def remove_tattoo(
             large_kwargs = {} if _AUTO_LARGE_BACKEND in _FEEDFORWARD else inpaint_kwargs
             result = _inpaint_region(
                 inpainter, result, large, _AUTO_LARGE_BACKEND, dilate, feather,
-                crop=crop, crop_pad=crop_pad, **large_kwargs,
+                crop=crop, crop_pad=crop_pad, **refine_kw, **large_kwargs,
             )
     else:
         result = _inpaint_region(
             inpainter, image, raw, backend, dilate, feather,
-            crop=crop, crop_pad=crop_pad, **inpaint_kwargs,
+            crop=crop, crop_pad=crop_pad, **refine_kw, **inpaint_kwargs,
         )
 
     return RemovalResult(

@@ -150,6 +150,17 @@ below. Both produce a `bool (H,W)` mask that flows into the same refine→inpain
   feather=5, ...) -> RemovalResult`. Pass a `mask` to skip detection (interactive path).
   `refine_mask` dilates (cover ink edges) and feathers (seamless blend). Returns `.image`,
   `.mask`, `.raw_mask`, `.found`. Pixels outside the mask are left bit-identical to the input.
+  - **Mask-refinement extras (opt-in, base-cv2 only, all default off → byte-identical):**
+    `adaptive_dilate` scales dilation per connected component to its size (`_dilate_adaptive`:
+    `dilate_grow` px per equivalent radius, floored at `dilate`, capped at `dilate_max`≈`3*dilate`
+    — coverage is a superset so recall can't regress); `edge_feather` swaps the Gaussian feather
+    for a hand-rolled guided filter (`_guided_filter` from `cv2.boxFilter`, no `ximgproc`) that
+    hugs the limb/ink contour and is exactly 0 beyond the `2*feather` band; `harmonize` runs
+    `_harmonize` in `_fill` (Reinhard LAB color-match to a surrounding-skin ring +
+    `cv2.seamlessClone` Poisson seam, with border/tiny/cv2-error fallbacks). **Every path still
+    ends in the soft-mask `Image.composite`**, so bit-identical-outside-mask is structural even
+    through seamlessClone. Threaded through `remove_tattoo`, the composable/all-in-one nodes, the
+    app, and `scripts/smoke_test.py`; A/B'd via `scripts/eval_seg.py --downstream` (PSNR-over-GT).
   - **Crop-to-region (`crop=` / `crop_pad=` knobs, default on):** each inpaint pass runs on a
     padded window cropped around the mask at the backend's *native* resolution (`_region_bbox`
     + `_NATIVE_RES`) instead of downscaling the whole frame. Previously a small tattoo on a

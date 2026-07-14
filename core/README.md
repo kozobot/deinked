@@ -367,17 +367,33 @@ value-to-effort for exactly this large-region case.
     diffusion fill" above)*; pose remains a future item (needs `controlnet_aux`). The **two-pass**
     LaMa-structure → diffusion-texture combo is also shipped as `backend="twostage"`.
 - **Mask refinement.** The default dilation was reduced 15 → 8 px (measured on the paired retouchme
-  data: ~38% less clean-skin over-paint — the main "blur" source — at negligible recall cost).
-  Remaining, and directly relevant to large-tattoo artifacts:
-  - **Per-region adaptive dilation.** Bold sleeve linework needs *more* dilation than a thin script
-    tattoo or its dark ink edges bleed through the fill as a ghost/halo; scale dilation to the mask
-    component's size (a few px for tiny tattoos, more for a sleeve) instead of a single global
-    `dilate`. Under-covered bold ink is a frequent "odd artifact" source on large pieces.
-  - **Edge-aware feathering** so the blend follows the limb contour, not a uniform Gaussian ring.
-  - **Seam / color harmonization.** Even a good fill can leave a visible patch on a large region:
-    color-match the fill to surrounding skin (histogram/reinhard transfer) and blend with
-    **Poisson (`cv2.seamlessClone`) or Laplacian-pyramid** compositing instead of a straight
-    feathered paste, to kill the halo and lighting mismatch at the boundary.
+  data: ~38% less clean-skin over-paint — the main "blur" source — at negligible recall cost). The
+  three follow-ups below are ✅ *implemented (opt-in, base-cv2 only — no new deps)* and thread
+  through `remove_tattoo`, `DeinkRefineMask`/`DeinkInpaint`/`DeinkRemoveTattoo`, the app, and
+  `scripts/smoke_test.py`. Each defaults **off** so nothing regresses (output stays byte-identical);
+  the shipped default for each is chosen by the A/B pass in `scripts/eval_seg.py --downstream`
+  (`--adaptive-dilate` / `--edge-feather` / `--harmonize`) that scores PSNR-over-GT-region on the
+  held-out split. All still end in the soft-mask `Image.composite`, so pixels outside the mask stay
+  bit-identical regardless.
+  - **Per-region adaptive dilation.** ✅ `refine_mask(..., adaptive=True)`: bold sleeve linework
+    needs *more* dilation than a thin script tattoo or its dark ink edges bleed through the fill as
+    a ghost/halo, so each connected component is grown by `dilate_grow` px per unit of its own
+    equivalent radius, floored at the global `dilate` (coverage is a *superset* — recall can't
+    regress) and capped at `dilate_max` (default `6*dilate`). See `_dilate_adaptive` in
+    `deink/pipeline.py`.
+  - **Edge-aware feathering.** ✅ `refine_mask(..., guide=<image>)`: the feather is a hand-rolled
+    **guided filter** (He et al., built from `cv2.boxFilter` — base OpenCV, no `ximgproc`) that
+    snaps the soft boundary to the limb/ink luminance contour instead of a uniform Gaussian ring.
+    Filtering a hard mask this way leaves it exactly 0 beyond the `2·feather` band, so the composite
+    stays bit-identical outside. See `_guided_filter` in `deink/pipeline.py`.
+  - **Seam / color harmonization.** ✅ `_fill(..., harmonize=True)`: color-match the fill to a ring
+    of surrounding skin (Reinhard mean/std transfer in LAB) and blend with **Poisson**
+    (`cv2.seamlessClone`) instead of a straight feathered paste, to kill the halo and lighting
+    mismatch a good fill can still leave on a large region. Falls back to color-only (or the raw
+    fill) when the ring is empty or the geometry is degenerate for `seamlessClone` (mask touching
+    the border / too small / cv2 error); the trailing soft-mask composite guarantees the invariant.
+    See `_harmonize` in `deink/pipeline.py`. (Laplacian-pyramid compositing remains an alternative
+    future option.)
 
 ### 3. Video (stated long-term goal)
 
